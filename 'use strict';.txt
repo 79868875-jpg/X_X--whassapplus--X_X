@@ -1,0 +1,587 @@
+'use strict';
+
+const { 
+    default: makeWASocket, 
+    useMultiFileAuthState, 
+    DisconnectReason 
+} = require('@whiskeysockets/baileys');
+const { Boom } = require('@hapi/boom');
+const pino = require('pino');
+const qrcode = require('qrcode-terminal');
+require('dotenv').config();
+
+// ==========================================
+// ⚙️ CONFIGURACIÓN Y CONSTANTES
+// ==========================================
+const CONFIG = {
+    MAX_MINUTOS_ACUMULADOS: 12,
+    MAX_PEDIDOS_COLA: 3,
+    MI_UBICACION: { lat: -13.5357, lng: -71.9388 },
+    MI_NUMERO: process.env.MI_NUMERO || "51930100974@c.us",
+    
+    GRUPOS_EXCLUIDOS: ['wayqui delivery'],
+
+    DISTANCIA_MAX_TODOS: 2.5,
+
+    PALABRAS_INTENCION: [
+        'motorizado', 'moto', 'delivery', 'pedido', 'envio', 'enviar', 
+        'libre', 'salida', 'busco', 'urgente', 'quien para', 'necesito', 
+        'cuanto', 'tarifa', 'ubica', 'ubicacion', 'despacho', 'despachar', 
+        'disponible', 'carrera', 'jalon', 'motores', 'boleta', 'factura', 'sale'
+    ],
+
+    PALABRAS_ANTI_TRIGGER: [
+        'cancelar', 'yape', 'pago', 'cobrar', 'transferencia', 'falta pagar', 
+        'falta cancelar', 'listo', 'entregado', 'pagado', 'plin', 'efectivo', 'monto'
+    ],
+
+    SUB_ZONAS: {
+        'wanchaq': ['garcilaso', 'real plaza', 'magisterio', 'wanchaq'],
+        'centro': ['san blas', 'recoleta', 'centro'],
+        'sansebastian': ['cultura', 'san borja', 'aeropuerto'],
+        'sanjeronimo': ['larapa'],
+        'aeropuerto': ['aeropuerto', 'nogales', 'manuel prado']
+    },
+
+    ZONAS_CONFIG: {
+        'centro': { nombre: 'CENTRO', icono: '🟥', centro: { lat: -13.5170, lng: -71.9790 }, descripcion: 'Ejército → Tica Tica / Recoleta' },
+        'wanchaq': { nombre: 'WANCHAQ', icono: '🟦', centro: { lat: -13.5180, lng: -71.9530 }, descripcion: 'Ejército/Óvalo → Garcilaso → Puente' },
+        'sansebastian': { nombre: 'SAN SEBASTIÁN', icono: '🟨', centro: { lat: -13.5250, lng: -71.9420 }, descripcion: 'Cultura → Prado → Santa Rosa' },
+        'sanjeronimo': { nombre: 'SAN JERÓNIMO/LARAPA', icono: '🟩', centro: { lat: -13.5070, lng: -71.9270 }, descripcion: 'Santa Rosa → abajo (solo Larapa profundo)' },
+        'aeropuerto': { nombre: 'AEROPUERTO', icono: '✈️', centro: { lat: -13.5330, lng: -71.9420 }, descripcion: 'Aeropuerto, Joyas, Vía Pas, Nogales, Manuel Prado, Burguer Box, Tomasa Tito' },
+        'todos': { nombre: 'TODOS', icono: '🌎', centro: null, descripcion: 'Todos los locales (priorizando cercanos)' }
+    }
+};
+
+// ==========================================
+// 📍 BASE DE DATOS DE LOCALES
+// ==========================================
+const LOCALES_BASE = [
+    // ✈️ AEROPUERTO
+    { nombre: 'nonna dioni', alias: ['nonna dioni', 'nonna dioni pizzerias', 'nonnadioni', 'deliv. nonna dioni pizzeria', 'deliv. nonna dioni'], lat: -13.5366892, lng: -71.9515777, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'fiorentino', alias: ['fiorentino', 'kaprizzapizz'], lat: -13.5340, lng: -71.9390, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'emily', alias: ['emily'], lat: -13.5320, lng: -71.9420, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'shulans', alias: ['shulans', 'shulan'], lat: -13.5315, lng: -71.9425, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'morimora', alias: ['morimora'], lat: -13.5280, lng: -71.9450, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'el buen sabor', alias: ['el buen sabor', 'deliv el buen sabor'], lat: -13.5310, lng: -71.9430, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'delivery giaco', alias: ['delivery giaco', 'giaco pizza', 'giaco'], lat: -13.5330, lng: -71.9400, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'la mostra', alias: ['la mostra', 'deliv la mostra', 'mostra', 'la mostra pizzeria'], lat: -13.5325, lng: -71.9410, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'roly manuel prado', alias: ['roly manuel prado', 'roly prado'], lat: -13.5130, lng: -71.9570, zona: 'aeropuerto', subZona: 'manuel prado' },
+    { nombre: 'wayqui express', alias: ['wayqui express'], lat: -13.5330, lng: -71.9400, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'ricochanchito', alias: ['ricochanchito', 'rico chanchito'], lat: -13.5200, lng: -71.9450, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'punto fit molino', alias: ['punto fit', 'punto fit molino', 'punto fit el molino'], lat: -13.5283, lng: -71.9542, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'tomasa tito', alias: ['tomasa tito'], lat: -13.5200, lng: -71.9450, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'don pez limon ttio', alias: ['deliv. cevi pezlimon ttio', 'pez limon ttio', 'don pez limon', 'pez limon'], lat: -13.5281, lng: -71.9485, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'chifa yichen av peru', alias: ['ttio chifa yichen av. peru', 'chifa yichen av peru', 'yichen ttio', 'chifa yichen ttio'], lat: -13.5292, lng: -71.9472, zona: 'aeropuerto', subZona: 'aeropuerto' },
+    { nombre: 'the burguer box', alias: ['the burguer box', 'burguer box', 'deliv. the burguer box'], lat: -13.5250, lng: -71.9450, zona: 'aeropuerto', subZona: 'aeropuerto' },
+
+    // 🟦 WANCHAQ
+    { nombre: 'la andinita', alias: ['la andinita', 'andinita'], lat: -13.5234, lng: -71.9720, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'cevichería reymar', alias: ['reymar', 'reymar garcilaso'], lat: -13.5150, lng: -71.9550, zona: 'wanchaq', subZona: 'garcilaso' },
+    { nombre: 'don gato', alias: ['don gato', 'gato'], lat: -13.5200, lng: -71.9500, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'chifa kung food panda', alias: ['kung food', 'panda', 'food panda'], lat: -13.5210, lng: -71.9490, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'punto acai', alias: ['punto acai', 'acai'], lat: -13.5220, lng: -71.9480, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: '7 caldos', alias: ['7 caldos', 'siete caldos'], lat: -13.5230, lng: -71.9470, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'jaku sushi', alias: ['jaku', 'jaku sushi'], lat: -13.5240, lng: -71.9460, zona: 'wanchaq', subZona: 'magisterio' },
+    { nombre: 'pizza wao', alias: ['wao', 'pizza wao'], lat: -13.5250, lng: -71.9450, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'paloma imbis', alias: ['paloma imbis', 'paloma'], lat: -13.5260, lng: -71.9440, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'empanadas y punto', alias: ['empanadas y punto', 'empanadas punto'], lat: -13.5180, lng: -71.9520, zona: 'wanchaq', subZona: 'real plaza' },
+    { nombre: 'quinta peña don luis', alias: ['don luis', 'quinta don luis'], lat: -13.5190, lng: -71.9510, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'florencia y fortunata', alias: ['florencia', 'florencia y fortunata'], lat: -13.5170, lng: -71.9780, zona: 'wanchaq', subZona: 'magisterio' },
+    { nombre: 'karitos', alias: ['karitos'], lat: -13.5160, lng: -71.9530, zona: 'wanchaq', subZona: 'real plaza' },
+    { nombre: 'takibi sushi', alias: ['takibi', 'takibi sushi'], lat: -13.5155, lng: -71.9535, zona: 'wanchaq', subZona: 'real plaza' },
+    { nombre: 'bodega italiana', alias: ['bodega italiana'], lat: -13.5165, lng: -71.9525, zona: 'wanchaq', subZona: 'real plaza' },
+    { nombre: 'punto fit wanchaq', alias: ['punto fit wanchaq'], lat: -13.5140, lng: -71.9560, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'heladería freskito', alias: ['freskito', 'heladeria freskito'], lat: -13.5130, lng: -71.9570, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'pizza car', alias: ['pizza car'], lat: -13.5145, lng: -71.9545, zona: 'wanchaq', subZona: 'garcilaso' },
+    { nombre: 'roly quillabamba', alias: ['roly quillabamba'], lat: -13.5135, lng: -71.9555, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'pollería atípico', alias: ['atipico', 'polleria atipico'], lat: -13.5125, lng: -71.9565, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'óvalo pachacútec', alias: ['pachacutec', 'ovalo pachacutec'], lat: -13.5100, lng: -71.9600, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'croocantpizzas', alias: ['croocant', 'croocantpizzas'], lat: -13.5120, lng: -71.9575, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'taytas', alias: ['taytas'], lat: -13.5115, lng: -71.9580, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'el bijao', alias: ['el bijao', 'bijao'], lat: -13.5190, lng: -71.9580, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'pizza hogar', alias: ['pizza hogar'], lat: -13.5170, lng: -71.9520, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'delivery las donas', alias: ['las donas'], lat: -13.5185, lng: -71.9530, zona: 'wanchaq', subZona: 'real plaza' },
+    { nombre: 'delicias del carmen', alias: ['delicias del carmen'], lat: -13.5230, lng: -71.9470, zona: 'wanchaq', subZona: 'magisterio' },
+    { nombre: 'riomar mariscal gamarra', alias: ['deliv. riomar mariscal gamarra', 'riomar gamarra', 'riomar mariscal', 'riomar'], lat: -13.5218, lng: -71.9562, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'frulay tupac', alias: ['waykys deliverys frulay tupac', 'frulay tupac', 'waykys tupac'], lat: -13.5245, lng: -71.9610, zona: 'wanchaq', subZona: 'wanchaq' },
+    { nombre: 'punto mar cevicheria', alias: ['deliv. punto mar cevicheria', 'punto mar', 'cevicheria punto mar'], lat: -13.5225, lng: -71.9515, zona: 'wanchaq', subZona: 'wanchaq' },
+
+    // 🟨 SAN SEBASTIÁN
+    { nombre: 'maki mania', alias: ['maki mania', 'makimania'], lat: -13.5200, lng: -71.9400, zona: 'sansebastian', subZona: 'cultura' },
+    { nombre: 'wayqui', alias: ['wayqui', 'huayqui'], lat: -13.5290, lng: -71.9460, zona: 'sansebastian', subZona: 'cultura' },
+    { nombre: 'qori sara', alias: ['qori sara', 'qorisara'], lat: -13.5230, lng: -71.9450, zona: 'sansebastian', subZona: 'cultura' },
+    { nombre: 'ichiban sushi', alias: ['ichiban', 'ichiban sushi'], lat: -13.5300, lng: -71.9440, zona: 'sansebastian', subZona: 'san borja' },
+    { nombre: 'supermasa', alias: ['supermasa'], lat: -13.5150, lng: -71.9350, zona: 'sansebastian', subZona: 'cultura' },
+    { nombre: 'las alicias', alias: ['las alicias', 'alicias'], lat: -13.5190, lng: -71.9620, zona: 'sansebastian', subZona: 'wanchaq' },
+    { nombre: 'mister carni voron', alias: ['mister carni voron', 'carni voron'], lat: -13.5250, lng: -71.9480, zona: 'sansebastian', subZona: 'cultura' },
+    { nombre: 'otera sushi', alias: ['otera sushi', 'otera'], lat: -13.5350, lng: -71.9350, zona: 'sansebastian', subZona: 'cultura' },
+
+    // 🟩 SAN JERÓNIMO / LARAPA
+    { nombre: 'pizza express larapa', alias: ['pizza express', 'express larapa'], lat: -13.5060, lng: -71.9260, zona: 'sanjeronimo', subZona: 'larapa' },
+    { nombre: 'la avenida', alias: ['la avenida', 'avenida larapa'], lat: -13.5050, lng: -71.9250, zona: 'sanjeronimo', subZona: 'larapa' },
+    { nombre: 'cevicheria popeye', alias: ['popeye', 'cevicheria popeye'], lat: -13.5100, lng: -71.9300, zona: 'sanjeronimo', subZona: 'larapa' },
+    { nombre: 'el gallito adderly', alias: ['aderly', 'gallito', 'gallito adderly'], lat: -13.5070, lng: -71.9270, zona: 'sanjeronimo', subZona: 'larapa' },
+
+    // 🟥 CENTRO
+    { nombre: 'hayaku recoleta', alias: ['hayaku', 'recoleta', 'hayaku recoleta'], lat: -13.517088, lng: -71.968216, zona: 'centro', subZona: 'recoleta' },
+    { nombre: 'santiago yi chen', alias: ['deliv. santiago yi chen', 'yi chen santiago', 'chifa santiago'], lat: -13.5235, lng: -71.9802, zona: 'centro', subZona: 'centro' },
+    { nombre: 'pollos quillabamba ayacucho', alias: ['quillabamba ayacucho'], lat: -13.5180, lng: -71.9780, zona: 'centro', subZona: 'centro' },
+    { nombre: 'chifa taypa', alias: ['taypa', 'chifa taypa'], lat: -13.5175, lng: -71.9785, zona: 'centro', subZona: 'centro' },
+    { nombre: 'la bodega 138', alias: ['bodega 138', 'la bodega'], lat: -13.5170, lng: -71.9790, zona: 'centro', subZona: 'centro' },
+    { nombre: 'limbus', alias: ['limbus', 'limbus restobar'], lat: -13.5165, lng: -71.9795, zona: 'centro', subZona: 'san blas' },
+    { nombre: 'pachapapa', alias: ['pachapapa'], lat: -13.5160, lng: -71.9790, zona: 'centro', subZona: 'san blas' },
+    { nombre: 'la bodeguita cubana', alias: ['bodeguita cubana'], lat: -13.5155, lng: -71.9805, zona: 'centro', subZona: 'centro' },
+    { nombre: 'inka burger', alias: ['inka burger', 'inkaburger'], lat: -13.5150, lng: -71.9810, zona: 'centro', subZona: 'centro' },
+    { nombre: 'de bocca', alias: ['de bocca', 'debocca'], lat: -13.5145, lng: -71.9815, zona: 'centro', subZona: 'recoleta' },
+    { nombre: 'fuego', alias: ['fuego', 'fuego burger'], lat: -13.5140, lng: -71.9820, zona: 'centro', subZona: 'centro' },
+    { nombre: 'nuna raymi', alias: ['nuna raymi', 'nunaraymi'], lat: -13.5135, lng: -71.9825, zona: 'centro', subZona: 'centro' },
+    { nombre: 'el truco del sabor', alias: ['el truco del sabor', 'truco del sabor'], lat: -13.5155, lng: -71.9810, zona: 'centro', subZona: 'recoleta' },
+    { nombre: 'wing peru', alias: ['wing peru', 'wings peru'], lat: -13.5160, lng: -71.9800, zona: 'centro', subZona: 'centro' },
+    { nombre: 'parada vegana', alias: ['parada vegana'], lat: -13.5175, lng: -71.9785, zona: 'centro', subZona: 'centro' },
+    { nombre: 'sushi cusco', alias: ['sushi cusco'], lat: -13.5165, lng: -71.9795, zona: 'centro', subZona: 'centro' },
+    { nombre: 'frulay correo', alias: ['waykys deliverys frulay correo', 'frulay correo', 'waykys correo'], lat: -13.5182, lng: -71.9745, zona: 'centro', subZona: 'centro' }
+];
+
+function normalizarTexto(txt) {
+    if (!txt) return "";
+    return txt.toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+
+const LOCALES = LOCALES_BASE.map(local => {
+    const aliasSet = new Set(local.alias ? local.alias.map(normalizarTexto) : []);
+    const nombreLimpio = normalizarTexto(local.nombre);
+    aliasSet.add(nombreLimpio);
+
+    return {
+        ...local,
+        nombre: nombreLimpio,
+        alias: Array.from(aliasSet)
+    };
+});
+
+// ==========================================
+// 🛡️ ESTRUCTURAS TTL
+// ==========================================
+class TTLSet {
+    constructor(ttlMs) { this.ttl = ttlMs; this.store = new Map(); }
+    add(value) { this.store.set(value, Date.now()); }
+    has(value) {
+        const time = this.store.get(value);
+        if (!time) return false;
+        if (Date.now() - time > this.ttl) { this.store.delete(value); return false; }
+        return true;
+    }
+}
+
+class TTLMap {
+    constructor(ttlMs) { this.ttl = ttlMs; this.store = new Map(); }
+    set(key, value) { this.store.set(key, { value, timestamp: Date.now() }); }
+    get(key) {
+        const entry = this.store.get(key);
+        if (!entry) return undefined;
+        if (Date.now() - entry.timestamp > this.ttl) { this.store.delete(key); return undefined; }
+        return entry.value;
+    }
+    has(key) { return this.get(key) !== undefined; }
+}
+
+// ==========================================
+// 🧠 ESTADO GLOBAL
+// ==========================================
+const estado = {
+    modoTodos: false,
+    zonaBaseParaTodos: null,
+    ultimoLocalDetectado: null,
+    tiempoUltimoLocal: 0,
+    zonaPrioritaria: 'aeropuerto',
+    botActivo: true,
+    colaPedidos: [],
+    localAnclado: null,
+    tiempoAnclaje: 0,
+    subZonaActiva: null,
+    mensajesProcesados: new TTLSet(60000),
+    idsEnProceso: new TTLSet(15000),
+    gruposEnEnfriamiento: new TTLMap(15000),
+    gruposPedidoTomadoPorOtro: new TTLMap(90000),
+    cacheNombresGrupos: new TTLMap(3600000)
+};
+
+// ==========================================
+// 📐 AUXILIARES GEOGRÁFICOS Y TEXTO
+// ==========================================
+function calcularDistancia(lat1, lng1, lat2, lng2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+            Math.sin(dLng/2) * Math.sin(dLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return parseFloat((R * c).toFixed(2));
+}
+
+function getCoordenadasZona(zona) {
+    const coords = {
+        'centro': { lat: -13.5160, lng: -71.9800 },
+        'wanchaq': { lat: -13.5180, lng: -71.9550 },
+        'sansebastian': { lat: -13.5230, lng: -71.9450 },
+        'sanjeronimo': { lat: -13.5070, lng: -71.9270 },
+        'aeropuerto': { lat: -13.5357, lng: -71.9388 }
+    };
+    return coords[zona] || coords['aeropuerto'];
+}
+
+function formatearHora(timestamp) {
+    return new Date(timestamp).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
+}
+
+async function obtenerNombreGrupo(sock, jid) {
+    const cacheado = estado.cacheNombresGrupos.get(jid);
+    if (cacheado) return cacheado;
+    try {
+        const metadata = await sock.groupMetadata(jid);
+        const nombre = metadata.subject || jid;
+        estado.cacheNombresGrupos.set(jid, nombre);
+        return nombre;
+    } catch (e) {
+        return jid;
+    }
+}
+
+function extraerTextoYUbicacion(msg) {
+    const mensajeReal = msg.message.ephemeralMessage?.message ||
+                        msg.message.viewOnceMessage?.message || 
+                        msg.message.viewOnceMessageV2?.message || 
+                        msg.message;
+                        
+    let texto = (mensajeReal.conversation || 
+                mensajeReal.extendedTextMessage?.text || 
+                mensajeReal.imageMessage?.caption || 
+                mensajeReal.documentMessage?.caption ||
+                mensajeReal.locationMessage?.name ||           
+                mensajeReal.locationMessage?.address || 
+                mensajeReal.liveLocationMessage?.caption || "").trim();
+
+    let coords = null;
+    if (mensajeReal.locationMessage || mensajeReal.liveLocationMessage) {
+        const loc = mensajeReal.locationMessage || mensajeReal.liveLocationMessage;
+        coords = { lat: loc.degreesLatitude, lng: loc.degreesLongitude };
+    }
+
+    if (!coords && texto) {
+        const regexCoords = /@(-?\d+\.\d+),(-?\d+\.\d+)/;
+        const match = texto.match(regexCoords);
+        if (match) {
+            coords = { lat: parseFloat(match[1]), lng: parseFloat(match[2]) };
+        }
+    }
+
+    return { texto, coords, mensajeReal };
+}
+
+// ==========================================
+// 🚀 NÚCLEO BAILEYS
+// ==========================================
+let botIniciado = false; // ✅ NUEVO: Control para evitar duplicados
+
+async function iniciarBot() {
+    if (botIniciado) {
+        console.log("⚠️ El bot ya está iniciado. Ignorando nueva instancia.");
+        return;
+    }
+    botIniciado = true;
+
+    console.log("🤖 Iniciando motor Baileys...");
+    const { state, saveCreds } = await useMultiFileAuthState('sesion_baileys');
+    
+    const sock = makeWASocket({
+        logger: pino({ level: 'silent' }),
+        auth: state,
+        browser: ['Radar Cusco', 'Chrome', '1.0.0']
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        
+        if (qr) {
+            console.clear();
+            console.log('✨ Escanea este QR para conectar el radar:\n');
+            qrcode.generate(qr, { small: true });
+        }
+
+        if (connection === 'close') {
+            const statusCode = (lastDisconnect?.error instanceof Boom) ? lastDisconnect.error.output.statusCode : null;
+            if (statusCode !== DisconnectReason.loggedOut) {
+                botIniciado = false; // ✅ Permite reconexión
+                setTimeout(iniciarBot, 3000);
+            }
+        } else if (connection === 'open') {
+            console.clear();
+            console.log('\n🚀 RADAR CUSCO CORREGIDO Y BLINDADO');
+            console.log(`🎯 Zona Activa: ${CONFIG.ZONAS_CONFIG[estado.zonaPrioritaria].icono} ${CONFIG.ZONAS_CONFIG[estado.zonaPrioritaria].nombre}\n`);
+        }
+    });
+
+    sock.ev.on('messages.upsert', async (m) => {
+        if (m.type !== 'notify') return;
+        
+        for (const msg of m.messages) {
+            if (!msg.message) continue;
+            
+            const jid = msg.key.remoteJid;
+            const deMi = msg.key.fromMe;
+            const msgId = msg.key.id;
+            const ahora = Date.now();
+            
+            const { texto: cuerpoRaw, coords, mensajeReal } = extraerTextoYUbicacion(msg);
+            const textoLimpio = normalizarTexto(cuerpoRaw);
+
+            // ⚙️ COMANDOS PRIVADOS
+            if (deMi) {
+                const responderZona = async (key) => {
+                    const z = CONFIG.ZONAS_CONFIG[key];
+                    let text = `${z.icono} ZONA: ${z.nombre}`;
+                    if (z.descripcion) text += `\n${z.descripcion}`;
+                    text += `\n✅ Bot activado`;
+                    await sock.sendMessage(jid, { text });
+                };
+
+                if (textoLimpio === '#wanchaq') {
+                    estado.zonaPrioritaria = 'wanchaq'; estado.modoTodos = false; estado.zonaBaseParaTodos = null; estado.botActivo = true; estado.colaPedidos = []; estado.localAnclado = null; estado.subZonaActiva = null;
+                    await responderZona('wanchaq');
+                }
+                else if (textoLimpio === '#sansebastian' || textoLimpio === '#cultura') {
+                    estado.zonaPrioritaria = 'sansebastian'; estado.modoTodos = false; estado.zonaBaseParaTodos = null; estado.botActivo = true; estado.colaPedidos = []; estado.localAnclado = null; estado.subZonaActiva = null;
+                    await responderZona('sansebastian');
+                }
+                else if (textoLimpio === '#centro') {
+                    estado.zonaPrioritaria = 'centro'; estado.modoTodos = false; estado.zonaBaseParaTodos = null; estado.botActivo = true; estado.colaPedidos = []; estado.localAnclado = null; estado.subZonaActiva = null;
+                    await responderZona('centro');
+                }
+                else if (textoLimpio === '#sanjeronimo' || textoLimpio === '#larapa' || textoLimpio === '#larafa') {
+                    estado.zonaPrioritaria = 'sanjeronimo'; estado.modoTodos = false; estado.zonaBaseParaTodos = null; estado.botActivo = true; estado.colaPedidos = []; estado.localAnclado = null; estado.subZonaActiva = null;
+                    await responderZona('sanjeronimo');
+                }
+                else if (textoLimpio === '#aeropuerto') {
+                    estado.zonaPrioritaria = 'aeropuerto'; estado.modoTodos = false; estado.zonaBaseParaTodos = null; estado.botActivo = true; estado.colaPedidos = []; estado.localAnclado = null; estado.subZonaActiva = null;
+                    await responderZona('aeropuerto');
+                }
+                else if (textoLimpio === '#todos') {
+                    estado.zonaBaseParaTodos = estado.zonaPrioritaria;
+                    estado.modoTodos = true; estado.botActivo = true; estado.colaPedidos = []; estado.localAnclado = null; estado.subZonaActiva = null;
+                    await responderZona('todos');
+                }
+                else if (textoLimpio === '#ocupado') {
+                    estado.botActivo = false;
+                    await sock.sendMessage(jid, { text: '⏸️ Radar Pausado. Buen delivery!' });
+                }
+                else if (textoLimpio === '#libre') {
+                    estado.botActivo = true; estado.colaPedidos = []; estado.localAnclado = null; estado.subZonaActiva = null;
+                    await sock.sendMessage(jid, { text: `▶️ Radar Activo: ${CONFIG.ZONAS_CONFIG[estado.zonaPrioritaria].icono} ${CONFIG.ZONAS_CONFIG[estado.zonaPrioritaria].nombre}` });
+                }
+                else if (textoLimpio === '#limpiar' || textoLimpio === '#entregado') {
+                    estado.colaPedidos = []; estado.localAnclado = null; estado.subZonaActiva = null;
+                    await sock.sendMessage(jid, { text: '✅ COLA LIMPIADA' });
+                }
+                else if (textoLimpio === '#estado') {
+                    let msg = '';
+                    if (estado.modoTodos) {
+                        msg = `${CONFIG.ZONAS_CONFIG.todos.icono} Modo: TODOS LOS LOCALES\n`;
+                        if (estado.zonaBaseParaTodos) msg += `📍 Base: ${CONFIG.ZONAS_CONFIG[estado.zonaBaseParaTodos].nombre}\n`;
+                    } else {
+                        msg = `${CONFIG.ZONAS_CONFIG[estado.zonaPrioritaria].icono} Zona: ${CONFIG.ZONAS_CONFIG[estado.zonaPrioritaria].nombre}\n`;
+                    }
+                    msg += `🤖 Bot: ${estado.botActivo ? '✅ ACTIVO' : '⏸️ PAUSADO'}\n`;
+                    msg += `📦 Cola: ${estado.colaPedidos.length}/${CONFIG.MAX_PEDIDOS_COLA}\n`;
+                    if (estado.subZonaActiva) msg += `📍 Sub-zona: ${estado.subZonaActiva}\n`;
+                    if (estado.localAnclado) msg += `⚓ Anclado a: ${estado.localAnclado.nombre.toUpperCase()}\n`;
+                    await sock.sendMessage(jid, { text: msg });
+                }
+                else if (textoLimpio === '#cola') {
+                    if (estado.colaPedidos.length === 0) {
+                        await sock.sendMessage(jid, { text: '📦 Cola actualmente VACÍA.' });
+                    } else {
+                        let resumenCola = `📦 **DETALLE DE COLA (${estado.colaPedidos.length}/${CONFIG.MAX_PEDIDOS_COLA}):**\n\n`;
+                        estado.colaPedidos.forEach((p, index) => {
+                            const minTranscurridos = Math.round((ahora - p.timestamp) / 60000);
+                            resumenCola += `${index + 1}. ${p.nombre.toUpperCase()} (${p.zona}) - hace ${minTranscurridos} min\n`;
+                        });
+                        await sock.sendMessage(jid, { text: resumenCola });
+                    }
+                }
+                continue;
+            }
+
+            if (!estado.botActivo) continue;
+
+            const esGrupo = jid.endsWith('@g.us');
+            if (!esGrupo) continue;
+
+            const nombreGrupoRaw = await obtenerNombreGrupo(sock, jid);
+            const nombreGrupoLimpio = normalizarTexto(nombreGrupoRaw);
+
+            if (CONFIG.GRUPOS_EXCLUIDOS.some(g => nombreGrupoLimpio.includes(g))) continue;
+
+            if (textoLimpio === 'yo' && !deMi) {
+                estado.gruposPedidoTomadoPorOtro.set(jid, ahora);
+                continue;
+            }
+            if (estado.gruposPedidoTomadoPorOtro.has(jid)) continue;
+
+            const tienePalabraInvalida = CONFIG.PALABRAS_ANTI_TRIGGER.some(p => textoLimpio.includes(p));
+            if (tienePalabraInvalida) continue;
+
+            const esUbicacion = !!mensajeReal.locationMessage || !!mensajeReal.liveLocationMessage || !!coords;
+            const esImagen = !!mensajeReal.imageMessage;
+            const esDocumento = !!mensajeReal.documentMessage;
+            const tieneIntencionText = CONFIG.PALABRAS_INTENCION.some(p => textoLimpio.includes(p));
+
+            if (estado.mensajesProcesados.has(msgId) || estado.idsEnProceso.has(msgId)) continue;
+            if (estado.gruposEnEnfriamiento.has(jid)) {
+                const ultimoYoEnGrupo = estado.gruposEnEnfriamiento.get(jid);
+                if (ahora - ultimoYoEnGrupo < 15000) continue;
+            }
+
+            if (!esUbicacion && !esImagen && !esDocumento && !tieneIntencionText) continue;
+
+            const zonaBase = estado.modoTodos ? (estado.zonaBaseParaTodos || estado.zonaPrioritaria) : estado.zonaPrioritaria;
+            const coordsBase = getCoordenadasZona(zonaBase);
+
+            let localEncontrado = null;
+            let mejorScore = 0;
+            let mejorLongitud = 0;
+
+            for (const l of LOCALES) {
+                if (!estado.modoTodos && l.zona !== estado.zonaPrioritaria) continue;
+
+                if (coordsBase) {
+                    const distBase = calcularDistancia(coordsBase.lat, coordsBase.lng, l.lat, l.lng);
+                    if (distBase > CONFIG.DISTANCIA_MAX_TODOS) continue;
+                }
+
+                if (estado.subZonaActiva && l.subZona !== estado.subZonaActiva) {
+                    const distSubZona = estado.colaPedidos.length > 0 ? 
+                        calcularDistancia(estado.colaPedidos[0].lat, estado.colaPedidos[0].lng, l.lat, l.lng) : 0;
+                    if (distSubZona > 1.5) continue;
+                }
+
+                let scoreActual = 0;
+                let maxAliasLen = 0;
+
+                const coincidenciaTexto = l.alias.some(alias => textoLimpio.includes(alias));
+                const coincidenciaGrupo = l.alias.some(alias => nombreGrupoLimpio.includes(alias));
+
+                if (coincidenciaTexto) {
+                    scoreActual += 20;
+                    const aliasEncontrado = l.alias.find(a => textoLimpio.includes(a));
+                    if (aliasEncontrado) maxAliasLen = Math.max(maxAliasLen, aliasEncontrado.length);
+                }
+
+                if (coincidenciaGrupo && (esUbicacion || esImagen || esDocumento || tieneIntencionText)) {
+                    scoreActual += 15;
+                    const aliasEncontrado = l.alias.find(a => nombreGrupoLimpio.includes(a));
+                    if (aliasEncontrado) maxAliasLen = Math.max(maxAliasLen, aliasEncontrado.length);
+                }
+
+                if (estado.subZonaActiva && l.subZona === estado.subZonaActiva) {
+                    scoreActual += 10;
+                }
+
+                if (coords && coords.lat != null && coords.lng != null) {
+                    const distPin = calcularDistancia(coords.lat, coords.lng, l.lat, l.lng);
+                    if (distPin < 0.3) scoreActual += 25;
+                }
+
+                if (scoreActual > mejorScore || (scoreActual === mejorScore && maxAliasLen > mejorLongitud)) {
+                    if (scoreActual >= 15) {
+                        mejorScore = scoreActual;
+                        mejorLongitud = maxAliasLen;
+                        localEncontrado = l;
+                    }
+                }
+            }
+
+            if (!localEncontrado) continue;
+
+            if (estado.localAnclado && (ahora - estado.tiempoAnclaje) / 60000 <= 15) {
+                const esElMismo = localEncontrado.nombre === estado.localAnclado.nombre;
+                const distAnclado = calcularDistancia(localEncontrado.lat, localEncontrado.lng, estado.localAnclado.lat, estado.localAnclado.lng);
+                if (!esElMismo && distAnclado > 0.8) {
+                    console.log(`🛑 Pedido ignorado por Anclaje en ${estado.localAnclado.nombre.toUpperCase()}`);
+                    continue;
+                }
+            }
+
+            if (estado.ultimoLocalDetectado === localEncontrado.nombre && (ahora - estado.tiempoUltimoLocal) < 20000) continue;
+
+            estado.colaPedidos = estado.colaPedidos.filter(p => (ahora - p.timestamp) / 60000 <= CONFIG.MAX_MINUTOS_ACUMULADOS);
+
+            if (estado.colaPedidos.length >= 2) {
+                const local1 = estado.colaPedidos[0].nombre;
+                const local2 = estado.colaPedidos[1].nombre;
+
+                if (local1 !== local2) {
+                    if (localEncontrado.nombre !== local1 && localEncontrado.nombre !== local2) {
+                        continue;
+                    }
+                }
+
+                if (estado.colaPedidos.length >= CONFIG.MAX_PEDIDOS_COLA) continue;
+            }
+
+            if (estado.colaPedidos.length === 0 && !estado.modoTodos) {
+                estado.subZonaActiva = localEncontrado.subZona;
+            }
+
+            estado.idsEnProceso.add(msgId);
+            estado.mensajesProcesados.add(msgId);
+            estado.gruposEnEnfriamiento.set(jid, ahora);
+
+            estado.localAnclado = localEncontrado;
+            estado.tiempoAnclaje = ahora;
+
+            sock.sendMessage(jid, { text: 'Yo' })
+                .then(() => {
+                    console.log(`⚡ [YO ENVIADO CON ÉXITO]: ${localEncontrado.nombre.toUpperCase()} | Grupo: ${nombreGrupoRaw}`);
+                })
+                .catch(e => console.log('❌ Error enviando Yo:', e.message));
+
+            estado.ultimoLocalDetectado = localEncontrado.nombre;
+            estado.tiempoUltimoLocal = ahora;
+            const distanciaCasa = calcularDistancia(CONFIG.MI_UBICACION.lat, CONFIG.MI_UBICACION.lng, localEncontrado.lat, localEncontrado.lng);
+            
+            estado.colaPedidos.push({
+                nombre: localEncontrado.nombre,
+                zona: localEncontrado.zona,
+                subZona: localEncontrado.subZona,
+                lat: localEncontrado.lat,
+                lng: localEncontrado.lng,
+                timestamp: ahora
+            });
+
+            (async () => {
+                try {
+                    let msgNotif = `⚡ PEDIDO GANADO!\n\n👥 Grupo: ${nombreGrupoRaw}\n📍 ${localEncontrado.nombre.toUpperCase()}\n📏 Distancia: ${distanciaCasa} km\n🕐 Hora: ${formatearHora(ahora)}\n📦 Cola: ${estado.colaPedidos.length}/${CONFIG.MAX_PEDIDOS_COLA}\n`;
+                    if (estado.subZonaActiva) msgNotif += `📍 Sub-zona: ${estado.subZonaActiva.toUpperCase()}\n`;
+                    if (coords) msgNotif += `🌐 Coordenadas: ${coords.lat}, ${coords.lng}\n`;
+                    if (estado.localAnclado) msgNotif += `⚓ Anclado a: ${estado.localAnclado.nombre.toUpperCase()}\n`;
+                    await sock.sendMessage(CONFIG.MI_NUMERO, { text: msgNotif });
+                } catch (e) {
+                    console.log('Error en notificación privada:', e.message);
+                }
+            })();
+        }
+    });
+}
+
+process.on('uncaughtException', (err) => console.error('❌ Error uncaught:', err));
+process.on('unhandledRejection', (reason) => console.error('❌ Rejection:', reason));
+
+// ✅ NUEVO: Solo se ejecuta si no está ya corriendo
+if (!botIniciado) {
+    iniciarBot();
+} 
+código funcional 
