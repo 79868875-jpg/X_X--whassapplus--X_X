@@ -1,3 +1,14 @@
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+app.get('/', (req, res) => {
+  res.send('Radar Cusco Operativo 🚀');
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Servidor de Render escuchando en el puerto ${PORT}`);
+});
 const { 
     makeWASocket, 
     useMultiFileAuthState, 

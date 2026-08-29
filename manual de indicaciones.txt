@@ -1,0 +1,44 @@
+====================================================================
+           GUÍA RÁPIDA: MANEJO, CAMBIOS Y MANTENIMIENTO DEL BOT
+====================================================================
+
+1. ¿EL BOT SIGUE PRENDIDO SI APAGO LA LAPTOP O CIERRO VS CODE?
+--------------------------------------------------------------------
+- SÍ, el bot está guardado en Render (la nube).
+- Puedes cerrar VS Code, apagar tu laptop o desconectar la red.
+- El bot seguirá trabajando y respondiendo mensajes las 24 horas del día.
+
+2. ¿CÓMO HACER CAMBIOS, AGREGAR DATOS O EDITAR EL CÓDIGO?
+--------------------------------------------------------------------
+Cuando quieras modificar mensajes, menús o código en radar.js:
+
+Paso 1: Abre VS Code y haz los cambios en tu archivo (radar.js).
+Paso 2: Guarda el archivo pressing Ctrl + S.
+Paso 3: Abre la terminal en VS Code y escribe estos 3 comandos:
+
+    git add .
+    git commit -m "actualizando respuestas del bot"
+    git push -u origin main
+
+Paso 4: ¡Listo! Render detectará el cambio solo y actualizará el bot en 1 o 2 minutos sin que tengas que hacer nada más.
+
+3. ¿QUÉ HACER SI SE DESCONECTA O SE "ROMPE" ALGO?
+--------------------------------------------------------------------
+Si el bot deja de responder o da error:
+
+1. Entra a dashboard.render.com desde tu laptop o celular.
+2. Selecciona tu servicio: X_X--whassapplus--X_X.
+3. Revisa la pestaña "Logs" para ver el mensaje de error.
+4. Para reiniciar el bot o generar un nuevo QR:
+   - Haz clic en el botón arriba a la derecha "Manual Deploy".
+   - Selecciona "Clear build cache & deploy".
+5. Si pide QR, ve a "Logs", abre WhatsApp en tu celular > Dispositivos vinculados > Vincular un dispositivo y escanéalo de nuevo.
+
+4. ¿CÓMO PAUSAR O APAGAR EL BOT TEMPORALMENTE?
+--------------------------------------------------------------------
+- Si no quieres que responda mientras estás ocupado:
+  1. Entra a dashboard.render.com (puedes hacerlo desde el navegador del celular).
+  2. Entra a tu proyecto y ve a "Settings" (Ajustes) a la izquierda.
+  3. Baja hasta encontrar el botón "Suspend Web Service" y dale clic.
+- Para volver a prenderlo: Entras al mismo lugar y le das a "Unsuspend Web Service".
+====================================================================
