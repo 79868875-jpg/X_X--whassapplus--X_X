@@ -1,0 +1,25 @@
+{
+  "name": "bots-julio",
+  "version": "1.0.0",
+  "description": "",
+  "main": "radar.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/79868875-jpg/X_X--whassapplus--X_X.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/79868875-jpg/X_X--whassapplus--X_X/issues"
+  },
+  "homepage": "https://github.com/79868875-jpg/X_X--whassapplus--X_X#readme",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
