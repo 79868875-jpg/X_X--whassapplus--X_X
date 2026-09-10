@@ -9,6 +9,7 @@ app.get('/', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Servidor de Render escuchando en el puerto ${PORT}`);
 });
+
 const { 
     makeWASocket, 
     useMultiFileAuthState, 
@@ -29,7 +30,8 @@ let modoTodos = false;
 let botActivo = true;
 
 const mensajesProcesados = new Set();
-const ultimasRespuestasYo = new Map();
+const ultimasRespuestasGrupo = new Map(); // Para cooldown de grupos (Timestamps)
+const ultimasRespuestasEmisor = new Map(); // Para cooldown de emisores (Objetos)
 const nombresGruposCache = new Map();
 const bloqueosGrupo = new Map(); // 🔒 Candado directo por Grupo
 
@@ -37,12 +39,14 @@ const bloqueosGrupo = new Map(); // 🔒 Candado directo por Grupo
 setInterval(() => {
     mensajesProcesados.clear();
     nombresGruposCache.clear();
+    ultimasRespuestasEmisor.clear();
 }, 30 * 60 * 1000);
 
 // Configuración de Zonas
 const ZONAS_CONFIG = {
     'centro': { nombre: 'CENTRO', icono: '🏙️' },
     'wanchaq': { nombre: 'WANCHAQ', icono: '🟦' },
+    'marcavalle': { nombre: 'MARCAVALLE', icono: '🟪' },
     'sansebastian': { nombre: 'SAN SEBASTIÁN', icono: '🟨' },
     'sanjeronimo': { nombre: 'abajo ', icono: '🟩' },
     'aeropuerto': { nombre: 'AEROPUERTO', icono: '✈️' },
@@ -67,54 +71,76 @@ const LOCALES = [
     { nombre: 'el truco del sabor', alias: ['el truco del sabor', 'deliv el truco', 'truco del sabor'], zona: 'centro' },
     { nombre: 'wing peru', alias: ['wing peru', 'deliverys wing'], zona: 'centro' },
     { nombre: 'parada vegana', alias: ['parada vegana', 'vegana'], zona: 'centro' },
-    
+    { nombre: 'cicciolina café', alias: ['cicciolina', 'cicciolina cafe', 'deliverys cicciolina'], zona: 'centro' },
+    { nombre: 'vacho sanguchería', alias: ['vacho', 'vacho sangucheria', 'deliv vacho'], zona: 'centro' },
+    { nombre: 'hayaku recoleta', alias: ['hayaku', 'hayaku recoleta', 'deliv hayaku recoleta', 'hayaku centro'], zona: 'centro' },
+    { nombre: 'pardo misky factory', alias: ['pardo misky factory', 'misky factory', 'pardo misky', 'deliv pardo miskyfactory'], zona: 'centro' },
+
     // 🟦 WANCHAQ
     { nombre: 'cevichería reymar', alias: ['reymar', 'reymar garcilaso', 'cevicheria reymar'], zona: 'wanchaq' },
     { nombre: 'don gato', alias: ['don gato', 'gato'], zona: 'wanchaq' },
-    { nombre: 'chifa kung food panda', alias: ['kung food panda', 'food panda', 'kung food'], zona: 'wanchaq' },
     { nombre: 'punto acai', alias: ['punto acai', 'acai'], zona: 'wanchaq' },
-    { nombre: 'jaku sushi', alias: ['jaku', 'jaku sushi', 'magisterio', 'magis'], zona: 'wanchaq' },
     { nombre: 'empanadas y punto', alias: ['empanadas y punto'], zona: 'wanchaq' },
     { nombre: 'zona logística', alias: ['zona logistica', 'zona log'], zona: 'wanchaq' },
-    { nombre: 'karitos', alias: ['karitos'], zona: 'wanchaq' },
-    { nombre: 'takibi sushi', alias: ['takibi', 'takibi sushi'], zona: 'wanchaq' },
     { nombre: 'punto fit wanchaq', alias: ['punto fit wanchaq'], zona: 'wanchaq' },
     { nombre: 'roly quillabamba', alias: ['roly quillabamba'], zona: 'wanchaq' },
     { nombre: 'pollería atípico', alias: ['polleria atipico', 'atipico'], zona: 'wanchaq' },
     { nombre: 'óvalo pachacútec', alias: ['ovalo pachacutec', 'pachacutec'], zona: 'wanchaq' },
-    { nombre: 'taytas', alias: ['taytas'], zona: 'wanchaq' },
     { nombre: 'el bijao', alias: ['el bijao', 'bijao'], zona: 'wanchaq' },
     { nombre: 'pizza hogar', alias: ['pizza hogar'], zona: 'wanchaq' },
     { nombre: 'delivery las donas', alias: ['delivery las donas', 'las donas'], zona: 'wanchaq' },
     { nombre: 'delicias del carmen', alias: ['delicias del carmen'], zona: 'wanchaq' },
-    
+    { nombre: 'cangrejo d piura', alias: ['cangrejo d piura', 'cangrejo de piura', 'cangrejodpiura', 'delivs cangrejodpiura'], zona: 'wanchaq' },
+    { nombre: 'pizza aventura garcilaso', alias: ['pizza aventura', 'aventura', 'pizza aventura garcilazo', 'deliv pizza aventura'], zona: 'wanchaq' },
+    { nombre: 'punto y coma', alias: ['punto y coma', 'punto y coma wanchaq', 'deliverys punto y coma'], zona: 'wanchaq' },
+    { nombre: 'llatan anticuchos y parrillas', alias: ['llatan', 'llatan anticuchos', 'deliv llatan anticuchos'], zona: 'wanchaq' },
+    { nombre: 'cevicheria popeye', alias: ['popeye', 'cevicheria popeye', 'popeye collasuyo'], zona: 'wanchaq' },
+    { nombre: 'la andinita', alias: ['la andinita', 'andinita'], zona: 'wanchaq' },
+    { nombre: 'librería pacha huáscar', alias: ['pacha', 'libreria pacha', 'pacha huascar'], zona: 'wanchaq' },
+
+    // 🟪 MARCAVALLE
+    { nombre: 'et-sushi marcavalle', alias: ['et sushi', 'et-sushi', 'et sushi marcavalle', 'et-sushi marcavalle'], zona: 'marcavalle' },
+    { nombre: 'takibi sushi bar', alias: ['takibi', 'takibi sushi', 'takibi sushi bar', 'deliv takibi sushi bar'], zona: 'marcavalle' },
+    { nombre: 'pecas de sol', alias: ['pecas de sol', 'pecas', 'deliverys pecas de sol'], zona: 'marcavalle' },
+    { nombre: 'punto mar cevichería', alias: ['punto mar', 'punto mar cevicheria', 'cevicheria punto mar', 'deliv punto mar'], zona: 'marcavalle' },
+    { nombre: 'bandejazos', alias: ['bandejazos', 'deliverys bandejazos', 'bandejazo'], zona: 'marcavalle' },
+    { nombre: 'linaje 33', alias: ['linaje 33', 'linaje', 'delivery linaje 33'], zona: 'marcavalle' },
+    { nombre: 'jaku sushi', alias: ['jaku', 'jaku sushi', 'magisterio', 'magis'], zona: 'marcavalle' },
+    { nombre: 'karitos', alias: ['karitos'], zona: 'marcavalle' },
+    { nombre: 'taytas', alias: ['taytas', 'taytas pizzeria', 'deliv taytas pizzeria'], zona: 'marcavalle' },
+    { nombre: 'qori sara', alias: ['qori sara', 'qorisara'], zona: 'marcavalle' },
+    { nombre: 'mister carni voron', alias: ['mister carni voron', 'carni voron'], zona: 'marcavalle' },
+    { nombre: 'paloma imbis', alias: ['paloma imbis', 'paloma'], zona: 'marcavalle' },
+    { nombre: 'florencia y fortunata', alias: ['florencia y fortunata'], zona: 'marcavalle' },
+    { nombre: 'bodega italiana', alias: ['bodega italiana'], zona: 'marcavalle' },
+    { nombre: 'heladería freskito', alias: ['heladeria freskito', 'freskito'], zona: 'marcavalle' },
+    { nombre: 'pizza car', alias: ['pizza car'], zona: 'marcavalle' },
+    { nombre: '7 caldos', alias: ['7 caldos', 'siete caldos'], zona: 'marcavalle' },
+    { nombre: 'taco kombi', alias: ['taco kombi', 'tacos kombi', 'deliverys taco kombi'], zona: 'marcavalle' },
+    { nombre: 'delivery akatsuka', alias: ['akatsuka', 'delivery akatsuka', 'akatsuka sushi'], zona: 'marcavalle' },
+    { nombre: 'pez limon santa úrsula', alias: ['pez limon', 'pez limon santa ursula', 'deliv pez limon'], zona: 'marcavalle' },
+    { nombre: 'chifa kung food panda', alias: ['kung food panda', 'food panda', 'kung food', 'deliv kung food panda'], zona: 'marcavalle' },
+
     // 🟨 SAN SEBASTIÁN
     { nombre: 'sushi cusco', alias: ['sushi cusco', 'mr. sushi cusco', 'mr sushi cusco', 'mr sushi', 'mr. sushi'], zona: 'sansebastian' },
     { nombre: 'maki mania', alias: ['maki mania', 'makimania', 'porton', 'paradero porton'], zona: 'sansebastian' },
     { nombre: 'wayqui', alias: ['wayqui san sebastian', 'huayqui'], zona: 'sansebastian' },
-    { nombre: 'qori sara', alias: ['qori sara', 'qorisara'], zona: 'sansebastian' },
-    { nombre: 'la andinita', alias: ['la andinita', 'andinita'], zona: 'sansebastian' },
     { nombre: 'ichiban sushi', alias: ['ichiban', 'ichiban sushi'], zona: 'sansebastian' },
     { nombre: 'supermasa', alias: ['supermasa'], zona: 'sansebastian' },
     { nombre: 'las alicias', alias: ['las alicias', 'alicias'], zona: 'sansebastian' },
-    { nombre: 'mister carni voron', alias: ['mister carni voron', 'carni voron'], zona: 'sansebastian' },
     { nombre: 'otera sushi', alias: ['otera sushi', 'otera'], zona: 'sansebastian' },
     { nombre: 'pizza wao', alias: ['pizza wao', 'wao'], zona: 'sansebastian' },
-    { nombre: 'paloma imbis', alias: ['paloma imbis', 'paloma'], zona: 'sansebastian' },
     { nombre: 'quinta peña don luis', alias: ['quinta peña don luis', 'quinta don luis', 'don luis'], zona: 'sansebastian' },
-    { nombre: 'florencia y fortunata', alias: ['florencia y fortunata'], zona: 'sansebastian' },
-    { nombre: 'bodega italiana', alias: ['bodega italiana'], zona: 'sansebastian' },
-    { nombre: 'heladería freskito', alias: ['heladeria freskito', 'freskito'], zona: 'sansebastian' },
     { nombre: 'croocantpizzas', alias: ['croocantpizzas', 'croocant'], zona: 'sansebastian' },
-    { nombre: 'pizza car', alias: ['pizza car'], zona: 'sansebastian' },
-    
+    { nombre: 'katsu sushi', alias: ['katsu', 'katsu sushi', 'deliverys katsu sushi'], zona: 'sansebastian' },
+
     // 🟩 SAN JERÓNIMO / LARAPA
     { nombre: 'pizza express larapa', alias: ['pizza express larapa', 'pizzeria express larapa', 'express larapa'], zona: 'sanjeronimo' },
     { nombre: 'la avenida', alias: ['la avenida', 'avenida larapa', 'av larapa'], zona: 'sanjeronimo' },
-    { nombre: 'cevicheria popeye', alias: ['popeye', 'cevicheria popeye'], zona: 'sanjeronimo' },
     { nombre: 'el gallito adderly', alias: ['aderly', 'gallito adderly', 'nogales'], zona: 'sanjeronimo' },
     { nombre: 'the burguer box', alias: ['the burguer box', 'burguer box', 'burger box'], zona: 'sanjeronimo' },
-    
+    { nombre: 'pollería pikol cachimayo', alias: ['pikol', 'pikol cachimayo', 'polleria pikol', 'deliv pikol cachimayo'], zona: 'sanjeronimo' },
+
     // ✈️ AEROPUERTO
     { nombre: 'fiorentino', alias: ['fiorentino'], zona: 'aeropuerto' },
     { nombre: 'emily', alias: ['emily'], zona: 'aeropuerto' },
@@ -129,7 +155,7 @@ const LOCALES = [
     { nombre: 'punto fit molino', alias: ['punto fit molino', 'punto fit el molino'], zona: 'aeropuerto' },
     { nombre: 'tomasa tito', alias: ['tomasa tito', 'tomasa'], zona: 'aeropuerto' },
     { nombre: 'nonna dioni pizzeria', alias: ['nonna dioni', 'dioni'], zona: 'aeropuerto' },
-    { nombre: '7 caldos', alias: ['7 caldos', 'siete caldos'], zona: 'aeropuerto' }
+    { nombre: 'chifa baozi', alias: ['baozi', 'chifa baozi'], zona: 'aeropuerto' }
 ];
 
 // ==========================================
@@ -274,7 +300,6 @@ function esEsenciaDePedido(texto, msgReal) {
     return false;
 }
 
-
 function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
     if (!esEsenciaDePedido(texto, msgReal)) {
         return null;
@@ -367,6 +392,12 @@ async function iniciarBot() {
                     await sock.sendMessage(jid, { text: 'ire a wanchaq' });
                     continue;
                 }
+                else if (textoLimpio === 'marcavalle' || textoLimpio === 'marca' || textoLimpio === 'magisterio') {
+                    zonaPrioritaria = 'marcavalle'; modoTodos = false; botActivo = true;
+                    await sock.sendMessage(jid, { text: 'camino a marcavalle' });
+                    continue;
+                }
+                
                 else if (textoLimpio === 'sansebastian' || textoLimpio === 'sebas' || textoLimpio === 'cultura') {
                     zonaPrioritaria = 'sansebastian'; modoTodos = false; botActivo = true;
                     await sock.sendMessage(jid, { text: 'En sansebas' });
@@ -414,7 +445,7 @@ async function iniciarBot() {
             // 2. REGISTRAR SI ESCRIBES "YO" MANUALMENTE EN UN GRUPO
             if (esGrupo && deMi) {
                 if (textoLimpio === 'yo' || textoLimpio.startsWith('yo ')) {
-                    ultimasRespuestasYo.set(jid, ahora);
+                    ultimasRespuestasGrupo.set(jid, ahora);
                 }
                 continue;
             }
@@ -425,7 +456,7 @@ async function iniciarBot() {
             // 🔒 BLOQUEO INMEDIATO PREVIO
             if (bloqueosGrupo.get(jid)) continue;
 
-            const ultimoEnvio = ultimasRespuestasYo.get(jid) || 0;
+            const ultimoEnvio = ultimasRespuestasGrupo.get(jid) || 0;
             if (ahora - ultimoEnvio < 180000) {
                 continue;
             }
@@ -451,7 +482,7 @@ async function iniciarBot() {
                 const esTexto = Boolean(mensajeReal.conversation || mensajeReal.extendedTextMessage);
 
                 // 🔍 REGISTRO PREVIO DEL EMISOR
-                const registroPrevio = ultimasRespuestasYo.get(claveEmisor);
+                const registroPrevio = ultimasRespuestasEmisor.get(claveEmisor);
 
                 if (registroPrevio) {
                     const tiempoTranscurrido = ahora - registroPrevio.timestamp;
@@ -476,9 +507,9 @@ async function iniciarBot() {
                 // 🔒 ACTIVACIÓN DE CANDADO SÍNCRONO
                 bloqueosGrupo.set(jid, true);
 
-                // Guardamos el tipo de mensaje y tiempo de este emisor
-                ultimasRespuestasYo.set(jid, ahora);
-                ultimasRespuestasYo.set(claveEmisor, {
+                // Guardamos el tiempo de grupo y los datos estructurados por emisor
+                ultimasRespuestasGrupo.set(jid, ahora);
+                ultimasRespuestasEmisor.set(claveEmisor, {
                     timestamp: ahora,
                     esUbicacion: esUbicacion,
                     esTexto: esTexto
