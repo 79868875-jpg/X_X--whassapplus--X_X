@@ -25,6 +25,11 @@ const qrcode = require('qrcode-terminal');
 const MI_NUMERO_LIMPIO = "51930100974"; 
 const MI_JID = `${MI_NUMERO_LIMPIO}@s.whatsapp.net`;
 
+const GRUPOS_EXCLUIDOS = [
+    "🏍️Wayqui Delivery🏍️",
+    "Wayqui Delivery" // Por si acaso sin emojis
+];
+
 let zonaPrioritaria = 'sanjeronimo'; 
 let modoTodos = false;
 let botActivo = true;
@@ -58,6 +63,7 @@ const ZONAS_CONFIG = {
 // ==========================================
 const LOCALES = [
     // 🔴 CENTRO
+    { nombre: 'sushi cusco wayki', alias: ['sushi cusco wayki', 'sushi wayki', 'wayki sushi', 'mtwup4w9kiyye18vp8'], zona: 'centro' },
     { nombre: 'pollos quillabamba ayacucho', alias: ['quillabamba ayacucho', 'quillabamba centro'], zona: 'centro' },
     { nombre: 'chifa taypa', alias: ['taypa', 'chifa taypa'], zona: 'centro' },
     { nombre: 'la bodega 138', alias: ['bodega 138', 'la bodega'], zona: 'centro' },
@@ -122,7 +128,7 @@ const LOCALES = [
     { nombre: 'chifa kung food panda', alias: ['kung food panda', 'food panda', 'kung food', 'deliv kung food panda'], zona: 'marcavalle' },
 
     // 🟨 SAN SEBASTIÁN
-    { nombre: 'sushi cusco', alias: ['sushi cusco', 'mr. sushi cusco', 'mr sushi cusco', 'mr sushi', 'mr. sushi'], zona: 'sansebastian' },
+    { nombre: 'sushi cusco', alias: ['mr sushi cusco', 'mr. sushi cusco', 'deliv mr sushi'], zona: 'sansebastian' },
     { nombre: 'maki mania', alias: ['maki mania', 'makimania', 'porton', 'paradero porton'], zona: 'sansebastian' },
     { nombre: 'wayqui', alias: ['wayqui san sebastian', 'huayqui'], zona: 'sansebastian' },
     { nombre: 'ichiban sushi', alias: ['ichiban', 'ichiban sushi'], zona: 'sansebastian' },
@@ -135,8 +141,8 @@ const LOCALES = [
     { nombre: 'katsu sushi', alias: ['katsu', 'katsu sushi', 'deliverys katsu sushi'], zona: 'sansebastian' },
 
     // 🟩 SAN JERÓNIMO / LARAPA
+    { nombre: 'la avenida', alias: ['la avenida', 'avenida larapa'], zona: 'sanjeronimo' },
     { nombre: 'pizza express larapa', alias: ['pizza express larapa', 'pizzeria express larapa', 'express larapa'], zona: 'sanjeronimo' },
-    { nombre: 'la avenida', alias: ['la avenida', 'avenida larapa', 'av larapa'], zona: 'sanjeronimo' },
     { nombre: 'el gallito adderly', alias: ['aderly', 'gallito adderly', 'nogales'], zona: 'sanjeronimo' },
     { nombre: 'the burguer box', alias: ['the burguer box', 'burguer box', 'burger box'], zona: 'sanjeronimo' },
     { nombre: 'pollería pikol cachimayo', alias: ['pikol', 'pikol cachimayo', 'polleria pikol', 'deliv pikol cachimayo'], zona: 'sanjeronimo' },
@@ -170,6 +176,10 @@ function limpiarTexto(str) {
         .replace(/[^\w\s]/gi, ' ')        
         .replace(/\s+/g, ' ')
         .trim();
+}
+function limpiarTextoConEmojis(str) {
+    if (!str) return "";
+    return str.toString().toLowerCase().trim();
 }
 
 function desempacarMensaje(m) {
@@ -307,6 +317,7 @@ function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
 
     const textoLimpio = limpiarTexto(texto);
     const grupoLimpio = limpiarTexto(nombreGrupo);
+    
 
     const localesZona = modoTodos 
         ? LOCALES 
@@ -315,14 +326,14 @@ function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
     for (const local of localesZona) {
         const busquedas = [local.nombre, ...local.alias];
 
-        for (const b of busquedas) {
+            for (const b of busquedas) {
             const bLimpio = limpiarTexto(b);
-            if (!bLimpio) continue;
+            if (!bLimpio || bLimpio.length < 3) continue;
 
-            // Prioriza si el texto menciona explícitamente la marca o si el mapa/captura viene del grupo
-            if (textoLimpio.includes(bLimpio) || grupoLimpio.includes(bLimpio)) {
+            const patron = new RegExp(`\\b${bLimpio}\\b`, 'i');
+            if (patron.test(textoLimpio)) {
                 return local;
-            }
+   0         }
         }
     }
     return null;
@@ -368,7 +379,7 @@ async function iniciarBot() {
         for (const msg of m.messages) {
             if (!msg.message) continue;
             
-            const jid = msg.key.remoteJid;
+           const jid = msg.key.remoteJid;
             const deMi = msg.key.fromMe;
             const msgId = msg.key.id;
             const esGrupo = jid.endsWith('@g.us');
@@ -379,6 +390,16 @@ async function iniciarBot() {
 
             const mensajeReal = desempacarMensaje(msg);
             if (!mensajeReal) continue;
+
+            let nombreGrupoTemp = nombresGruposCache.get(jid) || '';
+            if (!nombreGrupoTemp && jid.endsWith('@g.us')) {
+                try {
+                    const groupMetaTemp = await sock.groupMetadata(jid);
+                    nombreGrupoTemp = groupMetaTemp.subject || '';
+                    nombresGruposCache.set(jid, nombreGrupoTemp);
+                } catch (e) {}
+            }
+            if (GRUPOS_EXCLUIDOS.some(ex => limpiarTextoConEmojis(nombreGrupoTemp) === limpiarTextoConEmojis(ex))) continue;
 
             const textoBruto = extraerTextoMensaje(mensajeReal);
             const textoLimpio = limpiarTexto(textoBruto);
