@@ -1,3 +1,4 @@
+process.env.TZ = 'America/Lima'; 
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -333,7 +334,7 @@ function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
             const patron = new RegExp(`\\b${bLimpio}\\b`, 'i');
             if (patron.test(textoLimpio)) {
                 return local;
-   0         }
+         }
         }
     }
     return null;
@@ -348,7 +349,9 @@ async function iniciarBot() {
     const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
         auth: state,
-        browser: ['Radar Cusco V4.4', 'Safari', '3.0']
+        browser: ['Radar Cusco V4.4', 'Safari', '3.0'],
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: undefined
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -393,12 +396,11 @@ async function iniciarBot() {
 
             let nombreGrupoTemp = nombresGruposCache.get(jid) || '';
             if (!nombreGrupoTemp && jid.endsWith('@g.us')) {
-                try {
-                    const groupMetaTemp = await sock.groupMetadata(jid);
-                    nombreGrupoTemp = groupMetaTemp.subject || '';
-                    nombresGruposCache.set(jid, nombreGrupoTemp);
-                } catch (e) {}
+                sock.groupMetadata(jid).then(meta => {
+                    if (meta?.subject) nombresGruposCache.set(jid, meta.subject);
+                }).catch(() => {});
             }
+
             if (GRUPOS_EXCLUIDOS.some(ex => limpiarTextoConEmojis(nombreGrupoTemp) === limpiarTextoConEmojis(ex))) continue;
 
             const textoBruto = extraerTextoMensaje(mensajeReal);
@@ -457,8 +459,7 @@ async function iniciarBot() {
                 }
                 else if (textoLimpio === 'estado' || textoLimpio === 'status') {
                     const zonaObj = modoTodos ? ZONAS_CONFIG['todos'] : (ZONAS_CONFIG[zonaPrioritaria] || ZONAS_CONFIG['todos']);
-                    const estadoTexto = `📊 *ESTADO DEL RADAR*\n• Estado: ${botActivo ? 'Estoy volando' : 'un momento'}\n• Modo: ${modoTodos ? 'estare por todos lados' : 'solo en esta calle'}\n• Zona actual: ${zonaObj.icono} ${zonaObj.nombre}`;
-                    await sock.sendMessage(jid, { text: estadoTexto });
+                    const estadoTexto = `📊 *ESTADO DEL RADAR*\nEstado: ${botActivo ? 'Estoy volando' : 'un momento'}\nModo: ${modoTodos ? 'estare por todos lados' : 'solo en esta calle'}\nZona actual: ${zonaObj.icono} ${zonaObj.nombre}`;                    await sock.sendMessage(jid, { text: estadoTexto });
                     continue;
                 }
             }
@@ -482,16 +483,18 @@ async function iniciarBot() {
                 continue;
             }
 
-            // EVALUACIÓN Y RESPUESTA EN GRUPOS
+           // EVALUACIÓN Y RESPUESTA EN GRUPOS
             let nombreGrupo = nombresGruposCache.get(jid) || '';
-            if (!nombreGrupo) {
-                try {
-                    const groupMeta = await sock.groupMetadata(jid);
-                    nombreGrupo = groupMeta.subject || '';
-                    nombresGruposCache.set(jid, nombreGrupo);
-                } catch (e) {}
+            if (!nombreGrupo && jid.endsWith('@g.us')) {
+                // Pide los datos al servidor en segundo plano sin congelar la respuesta del bot
+                sock.groupMetadata(jid)
+                    .then(meta => {
+                        if (meta?.subject) nombresGruposCache.set(jid, meta.subject);
+                    })
+                    .catch(() => {});
             }
 
+            // Detecta el local de inmediato (si el nombre aún no cargó, pasa '' sin trabarse)
             const localDetectado = detectarLocalPorZona(textoBruto, zonaPrioritaria, nombreGrupo, mensajeReal);
 
             if (localDetectado) {
