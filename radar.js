@@ -359,13 +359,12 @@ function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
     return null;
 }
 
-// ==========================================
 // 🚀 NÚCLEO PRINCIPAL
-// ==========================================
+
 async function iniciarBot() {
     const { state, saveCreds } = await useMultiFileAuthState('sesion_baileys_v3');
     
- const sock = makeWASocket({
+    const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
         auth: state,
         browser: ['Ubuntu', 'Chrome', '110.0.5563.64'],
@@ -377,13 +376,24 @@ async function iniciarBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
+    // 📲 VINCULACIÓN POR CÓDIGO DE TEXTO (Pairing Code)
+    if (!sock.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                const numeroFormateado = MI_NUMERO_LIMPIO.replace(/[^0-9]/g, '');
+                const codigo = await sock.requestPairingCode(numeroFormateado);
+                console.log('\n==============================================');
+                console.log(`🔑 TU CÓDIGO DE VINCULACIÓN ES: ${codigo}`);
+                console.log('==============================================\n');
+            } catch (err) {
+                console.error('Error al solicitar el código de vinculación:', err);
+            }
+        }, 5000);
+    }
+
     sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        if (qr) {
-            console.clear();
-            console.log('📱 Escanea este QR en WhatsApp Web:\n');
-            qrcode.generate(qr, { small: true });
-        }
+        const { connection, lastDisconnect } = update;
+        
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error instanceof Boom) ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut : true;
             if (shouldReconnect) setTimeout(iniciarBot, 3000);
@@ -391,7 +401,7 @@ async function iniciarBot() {
             console.clear();
             const zonaActivaNombre = modoTodos ? 'TODOS' : (ZONAS_CONFIG[zonaPrioritaria]?.nombre || 'ZONA');
             console.log('==============================================');
-            console.log('✅ RADAR CUSCO - OPERATIVO');
+            console.log('✅ RADAR CUSCO - OPERATIVO Y VINCULADO');
             console.log(`🎯 Zona Activa: ${zonaActivaNombre}`);
             console.log('==============================================\n');
         }
