@@ -318,25 +318,44 @@ function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
 
     const textoLimpio = limpiarTexto(texto);
     const grupoLimpio = limpiarTexto(nombreGrupo);
-    
+
+    // Extrae contexto de mensajes citados/reenviados
+    const contextoMsg = msgReal.extendedTextMessage?.contextInfo;
+    const textoCitado = contextoMsg ? extraerTextoMensaje(contextoMsg.quotedMessage) : '';
+    const textoBuscar = `${textoLimpio} ${limpiarTexto(textoCitado)} ${grupoLimpio}`.trim();
 
     const localesZona = modoTodos 
         ? LOCALES 
         : LOCALES.filter(l => l.zona === zonaFiltro);
 
+    // 1. Coincidencias por nombre o alias de la zona
     for (const local of localesZona) {
         const busquedas = [local.nombre, ...local.alias];
 
-            for (const b of busquedas) {
+        for (const b of busquedas) {
             const bLimpio = limpiarTexto(b);
             if (!bLimpio || bLimpio.length < 3) continue;
 
             const patron = new RegExp(`\\b${bLimpio}\\b`, 'i');
-            if (patron.test(textoLimpio)) {
+            if (patron.test(textoBuscar)) {
                 return local;
-         }
+            }
         }
     }
+
+    // 2. Fallback de respuesta rápida para Render:
+    // Si es una ubicación (nativa o reenviada) de tu zona activa, asegura la respuesta
+    const esUbicacion = Boolean(
+        msgReal.locationMessage || 
+        msgReal.liveLocationMessage || 
+        contextoMsg?.quotedMessage?.locationMessage ||
+        contextoMsg?.quotedMessage?.liveLocationMessage
+    );
+
+    if (esUbicacion && localesZona.length > 0) {
+        return localesZona[0]; 
+    }
+
     return null;
 }
 
@@ -346,10 +365,12 @@ function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
 async function iniciarBot() {
     const { state, saveCreds } = await useMultiFileAuthState('sesion_baileys_v3');
     
-    const sock = makeWASocket({
+ const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
         auth: state,
-        browser: ['Radar Cusco V4.4', 'Safari', '3.0'],
+        browser: ['Ubuntu', 'Chrome', '110.0.5563.64'],
+        syncFullHistory: true,
+        markOnlineOnConnect: true,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: undefined
     });
@@ -459,7 +480,8 @@ async function iniciarBot() {
                 }
                 else if (textoLimpio === 'estado' || textoLimpio === 'status') {
                     const zonaObj = modoTodos ? ZONAS_CONFIG['todos'] : (ZONAS_CONFIG[zonaPrioritaria] || ZONAS_CONFIG['todos']);
-                    const estadoTexto = `📊 *ESTADO DEL RADAR*\nEstado: ${botActivo ? 'Estoy volando' : 'un momento'}\nModo: ${modoTodos ? 'estare por todos lados' : 'solo en esta calle'}\nZona actual: ${zonaObj.icono} ${zonaObj.nombre}`;                    await sock.sendMessage(jid, { text: estadoTexto });
+                    const estadoTexto = `📊 *ESTADO DEL RADAR*\nEstado: ${botActivo ? 'Estoy volando' : 'un momento'}\nModo: ${modoTodos ? 'estare por todos lados' : 'solo en esta calle'}\nZona actual: ${zonaObj.icono} ${zonaObj.nombre}`;
+                    await sock.sendMessage(jid, { text: estadoTexto });
                     continue;
                 }
             }
