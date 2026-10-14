@@ -164,6 +164,36 @@ const LOCALES = [
     { nombre: 'nonna dioni pizzeria', alias: ['nonna dioni', 'dioni'], zona: 'aeropuerto' },
     { nombre: 'chifa baozi', alias: ['baozi', 'chifa baozi'], zona: 'aeropuerto' }
 ];
+    // ==========================================
+// 🔎 ÍNDICE GLOBAL DE TÉRMINOS (nuevo)
+// ==========================================
+const TERMINOS_LOCALES = (() => {
+    const lista = [];
+    for (const local of LOCALES) {
+        const vistos = new Set();
+        for (const b of [local.nombre, ...local.alias]) {
+            const t = limpiarTexto(b);
+            if (!t || t.length < 3 || vistos.has(t)) continue;
+            vistos.add(t);
+            lista.push({ local, termino: t, regex: new RegExp(`(^| )${t}( |$)`) });
+        }
+    }
+    // Descarta términos ambiguos: los que están contenidos dentro de un término
+    // más largo de OTRO local (ej. 'sushi cusco' dentro de 'sushi cusco wayki').
+    return lista.filter(a => !lista.some(b =>
+        b.local !== a.local && b.termino !== a.termino && a.regex.test(b.termino)
+    ));
+})();
+
+function buscarLocalesEnTexto(textoLimpio) {
+    if (!textoLimpio) return [];
+    const aciertos = TERMINOS_LOCALES.filter(x => x.regex.test(textoLimpio));
+    // Si un acierto está contenido en otro más largo, se queda el más largo
+    const finales = aciertos.filter(a => !aciertos.some(b =>
+        b !== a && b.termino !== a.termino && a.regex.test(b.termino)
+    ));
+    return [...new Set(finales.map(x => x.local))];
+}
 
 // ==========================================
 // 🛠️ FUNCIONES AUXILIARES
@@ -317,34 +347,26 @@ function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
     }
 
     const textoLimpio = limpiarTexto(texto);
-    const grupoLimpio = limpiarTexto(nombreGrupo);
-
-    // Extrae contexto de mensajes citados/reenviados
     const contextoMsg = msgReal.extendedTextMessage?.contextInfo;
-    const textoCitado = contextoMsg ? extraerTextoMensaje(contextoMsg.quotedMessage) : '';
-    const textoBuscar = `${textoLimpio} ${limpiarTexto(textoCitado)} ${grupoLimpio}`.trim();
 
-    const localesZona = modoTodos 
-        ? LOCALES 
-        : LOCALES.filter(l => l.zona === zonaFiltro);
+    // 1. Busca únicamente en el texto del pedido
+    let candidatos = buscarLocalesEnTexto(textoLimpio);
 
-    // 1. Coincidencias por nombre o alias de la zona
-    for (const local of localesZona) {
-        const busquedas = [local.nombre, ...local.alias];
-
-        for (const b of busquedas) {
-            const bLimpio = limpiarTexto(b);
-            if (!bLimpio || bLimpio.length < 3) continue;
-
-            const patron = new RegExp(`\\b${bLimpio}\\b`, 'i');
-            if (patron.test(textoBuscar)) {
-                return local;
-            }
-        }
+    // 2. Si no encontró candidatos, busca en el mensaje citado/reenviado
+    if (candidatos.length === 0) {
+        const mensajeCitado = contextoMsg?.quotedMessage;
+        const textoCitado = mensajeCitado ? extraerTextoMensaje(mensajeCitado) : '';    
+        const citadoLimpio = limpiarTexto(textoCitado);
+        
+        candidatos = buscarLocalesEnTexto(citadoLimpio);
     }
 
-    // 2. Fallback de respuesta rápida para Render:
-    // Si es una ubicación (nativa o reenviada) de tu zona activa, asegura la respuesta
+    // Si no hay candidatos o hay ambigüedad (más de 1), ignora
+    if (candidatos.length !== 1) return null;
+
+    const local = candidatos[0];
+
+    // Detecta si viene ubicación en el mensaje o en el citado
     const esUbicacion = Boolean(
         msgReal.locationMessage || 
         msgReal.liveLocationMessage || 
@@ -352,13 +374,15 @@ function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
         contextoMsg?.quotedMessage?.liveLocationMessage
     );
 
-    if (esUbicacion && localesZona.length > 0) {
-        return localesZona[0]; 
+    // FILTRO OBLIGATORIO DE ZONA (Tu lógica estricta)
+    if (modoTodos !== true) {
+        if (!zonaFiltro || local.zona !== zonaFiltro) {
+            return null;
+        }
     }
 
-    return null;
+    return local;
 }
-
 // 🚀 NÚCLEO PRINCIPAL
 
 async function iniciarBot() {
@@ -426,11 +450,14 @@ async function iniciarBot() {
             if (!mensajeReal) continue;
 
             let nombreGrupoTemp = nombresGruposCache.get(jid) || '';
-            if (!nombreGrupoTemp && jid.endsWith('@g.us')) {
-                sock.groupMetadata(jid).then(meta => {
-                    if (meta?.subject) nombresGruposCache.set(jid, meta.subject);
-                }).catch(() => {});
-            }
+    if (!nombreGrupoTemp && (esGrupo || jid.endsWith('@g.us'))) {
+    sock.groupMetadata(jid).then(meta => {
+        if (meta?.subject) {
+            nombreGrupoTemp = meta.subject;
+            nombresGruposCache.set(jid, meta.subject);
+        }
+    }).catch(() => {});
+}
 
             if (GRUPOS_EXCLUIDOS.some(ex => limpiarTextoConEmojis(nombreGrupoTemp) === limpiarTextoConEmojis(ex))) continue;
 
@@ -529,7 +556,7 @@ async function iniciarBot() {
             // Detecta el local de inmediato (si el nombre aún no cargó, pasa '' sin trabarse)
             const localDetectado = detectarLocalPorZona(textoBruto, zonaPrioritaria, nombreGrupo, mensajeReal);
 
-            if (localDetectado) {
+            if (localDetectado && (modoTodos || localDetectado.zona === zonaPrioritaria)) {
                 const emisor = msg.key.participant || jid;
                 const claveEmisor = `${jid}_${emisor}`;
                 
@@ -575,7 +602,7 @@ async function iniciarBot() {
                     await sock.sendMessage(jid, { text: 'Yo' });
 
                     const miJidDestino = MI_JID;
-                    const textoZonaAviso = modoTodos ? 'TODOS' : (ZONAS_CONFIG[zonaPrioritaria]?.nombre || 'ZONA');
+                    const textoZonaAviso = ZONAS_CONFIG[localDetectado.zona]?.nombre || localDetectado.zona.toUpperCase();
                     const aviso = `🎯 *PEDIDO GANADO* Atento\n Local: Ire a ${localDetectado.nombre.toUpperCase()} Zona: esta calle es ${textoZonaAviso}`;
                     await sock.sendMessage(miJidDestino, { text: aviso });
 
@@ -591,5 +618,67 @@ async function iniciarBot() {
         }
     });
 }
+if (process.env.RADAR_TEST === '1') {
+    const txt = (t) => ({ conversation: t });
+    const ficha = (n) => `Pedido ${n}\nCliente: Juan 987654321\nDirección: Av Cultura 123\nTotal s/ 45 efectivo`;
+    const casos = [
+        ['5b ubicación sola, con grupo Limbus', 'centro', false, { locationMessage: {} }, 'Limbus Delivery', null],
+        ['11 sansebastian + Wayki (centro)', 'sansebastian', false, txt(ficha('Sushi Cusco Wayki')), '', null],
+        ['12 pedido Giaco + grupo Limbus, centro', 'centro', false, txt(ficha('Delivery Giaco')), 'Limbus Delivery', null],
+        ['12b pedido Giaco + grupo Limbus, aeropuerto', 'aeropuerto', false, txt(ficha('Delivery Giaco')), 'Limbus Delivery', 'delivery giaco'],
+        ['12c pedido Limbus + grupo Giaco, aeropuerto', 'aeropuerto', false, txt(ficha('Limbus')), 'Delivery Giaco', null],
+        ['13 texto Giaco citando ubicación, centro', 'centro', false, { extendedTextMessage: { text: ficha('Delivery Giaco'), contextInfo: { quotedMessage: { locationMessage: {} } } } }, '', null],
+        ['14 todos + Giaco + grupo Limbus', 'centro', true, txt(ficha('Delivery Giaco')), 'Limbus Delivery', 'delivery giaco'],
+        ['1  centro + Sushi Cusco Wayki',   'centro',       false, txt(ficha('Sushi Cusco Wayki')), '',  'sushi cusco wayki'],
+        ['2  centro + Delivery Giaco',      'centro',       false, txt(ficha('Delivery Giaco')),    '',  null],
+        ['3  sanjeronimo + Mr Sushi Cusco', 'sanjeronimo',  false, txt(ficha('Mr Sushi Cusco')),    '',  null],
+        ['4  sanjeronimo + Pikol Cachimayo','sanjeronimo',  false, txt(ficha('Pollería Pikol Cachimayo')), '', 'pollería pikol cachimayo'],
+        ['5  centro + ubicación sola',      'centro',       false, { locationMessage: { degreesLatitude: -13.5, degreesLongitude: -71.9 } }, '', null],
+        ['6  centro + local desconocido',   'centro',       false, txt(ficha('Pizzería Los Tres Chanchitos')), '', null],
+        ['7  nombre solo en el grupo',      'centro',       false, txt(ficha('')),                  'Limbus Delivery', null],
+        ['8  palabras genéricas',           'centro',       false, txt('Pedido delivery pollería sushi ubicación dirección cliente 987654321'), '', null],
+        ['9a todos + desconocido',          'centro',       true,  txt(ficha('Local Inventado')),   '',  null],
+        ['9b todos + Giaco',                'centro',       true,  txt(ficha('Delivery Giaco')),    '',  'delivery giaco'],
+    ];
+    
+    let pruebasFallidas = 0;
+    let pruebasAprobadas = 0;
 
+    for (const [nombre, zona, todos, msg, grupo, esperado] of casos) {
+        try {
+            modoTodos = todos;
+
+            const r = detectarLocalPorZona(
+                extraerTextoMensaje(msg),
+                zona,
+                grupo,
+                msg
+            );
+
+            const obtenido = r ? r.nombre : null;
+            const correcto = obtenido === esperado;
+
+            if (correcto) {
+                pruebasAprobadas++;
+                console.log(`✅ PASS: ${nombre} -> ${obtenido}`);
+            } else {
+                pruebasFallidas++;
+                console.error(
+                    `❌ FAIL: ${nombre} | Esperado: ${esperado} | Obtenido: ${obtenido}`
+                );
+            }
+        } catch (error) {
+            pruebasFallidas++;
+            console.error(`❌ ERROR: ${nombre}`, error);
+        }
+    }
+
+    console.log('\n========== RESUMEN RADAR TEST ==========');
+    console.log(`✅ Aprobadas: ${pruebasAprobadas}`);
+    console.log(`❌ Fallidas: ${pruebasFallidas}`);
+    console.log('========================================');
+
+    process.exit(pruebasFallidas > 0 ? 1 : 0);
+
+}
 iniciarBot();
