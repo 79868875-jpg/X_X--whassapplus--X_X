@@ -11,14 +11,26 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Servidor de Render escuchando en el puerto ${PORT}`);
 });
 
-const { 
-    makeWASocket, 
-    useMultiFileAuthState, 
-    DisconnectReason 
+const {
+    makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    downloadMediaMessage
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
+// Lector de texto de imágenes y comandas.
+let createWorkerOCR = null;
+let workerOCRPromise = null;
+
+try {
+    ({ createWorker: createWorkerOCR } = require('tesseract.js'));
+} catch (error) {
+    console.warn(
+        'Falta tesseract.js: no se podrá leer el texto de las imágenes.'
+    );
+}
 
 // ==========================================
 // ⚙️ CONFIGURACIÓN Y ESTADO
@@ -129,7 +141,7 @@ const LOCALES = [
     { nombre: 'chifa kung food panda', alias: ['kung food panda', 'food panda', 'kung food', 'deliv kung food panda'], zona: 'marcavalle' },
 
     // 🟨 SAN SEBASTIÁN
-    { nombre: 'sushi cusco', alias: ['mr sushi cusco', 'mr. sushi cusco', 'deliv mr sushi'], zona: 'sansebastian' },
+    { nombre: 'mr sushi cusco', alias: ['mr sushi cusco', 'mr. sushi cusco', 'deliv mr sushi'], zona: 'sansebastian' },
     { nombre: 'maki mania', alias: ['maki mania', 'makimania', 'porton', 'paradero porton'], zona: 'sansebastian' },
     { nombre: 'wayqui', alias: ['wayqui san sebastian', 'huayqui'], zona: 'sansebastian' },
     { nombre: 'ichiban sushi', alias: ['ichiban', 'ichiban sushi'], zona: 'sansebastian' },
@@ -243,138 +255,228 @@ function extraerTextoMensaje(msgReal) {
             msgReal.videoMessage?.caption || "").trim();
 }
 
+function obtenerPuntuacionComanda(texto) {
+    const t = limpiarTexto(texto);
+
+    const patrones = [
+        /\bcliente\b/,
+        /\bcuenta\b/,
+        /\btotal\b/,
+        /\bmetodo de pago\b/,
+        /\bdireccion\b/,
+        /\breferencia\b/,
+        /\bpedido\b/,
+        /\bdelivery\b/,
+        /\bproductos?\b/,
+        /\borden\b/,
+        /\befectivo\b/,
+        /\bcobrar\b/,
+        /\bboleta\b/,
+        /\bfactura\b/,
+        /\bs\/\s*\d/,
+        /\b9\d{8}\b/
+    ];
+
+    return patrones.reduce(
+        (suma, patron) => suma + (patron.test(t) ? 1 : 0),
+        0
+    );
+}
+    function esComandaLegible(texto) {
+    const t = limpiarTexto(texto);
+    if (!t) return false;
+
+    const puntos = obtenerPuntuacionComanda(t);
+    const tieneTelefono = /\b9\d{8}\b/.test(t);
+    const tieneCampos =
+        /\b(cliente|cuenta|total|direccion|pedido|delivery|boleta|factura|productos?|orden)\b/.test(t);
+
+    return puntos >= 3 ||
+        (puntos >= 2 && (tieneTelefono || tieneCampos));
+}
+
 function esEsenciaDePedido(texto, msgReal) {
     const t = limpiarTexto(texto);
 
-    // 1. SI ES UN MENSAJE DE TEXTO QUE SOLO DICE "YO" O SIMILAR -> IGNORAR DIRECTAMENTE
-    const respuestasCompanerosExactas = ['yo', 'mio', 'ya voy', 'tomado', 'voy', 'ya lo tome', 'lo tengo', 'yo puedo'];
-    if (respuestasCompanerosExactas.includes(t)) {
-        return false;
-    }
-
-    // 2. SI EL MENSAJE CONTIENE UNA UBICACIÓN NATIVA DE WHATSAPP (Mapa directo)
-    if (msgReal.locationMessage || msgReal.liveLocationMessage) {
+    if (msgReal?.locationMessage ||
+        msgReal?.liveLocationMessage) {
         return true;
     }
 
-    // 3. SI EL MENSAJE ES UNA IMAGEN O DOCUMENTO (Capturas, comprobantes o comandas)
-    if (msgReal.imageMessage || msgReal.documentMessage) {
-        // A) Respuestas directas de compañeros en caption -> Descartar
-        const contieneRespCompanero = respuestasCompanerosExactas.some(r => t.includes(r));
-        if (contieneRespCompanero) return false;
-
-        // B) Indicadores fuertes de comprobante / voucher de pago bancario
-        const palabrasPagoBancario = [
-            'yape', 'yapeaste', 'plin', 'bcp', 'izipay', 'niubiz', 'pos',
-            'constancia', 'voucher', 'transfiriendo', 'transferencia', 'operacion',
-            'titular', 'debito', 'credito', 'banco'
-        ];
-        
-        let puntosPago = 0;
-        for (const p of palabrasPagoBancario) {
-            if (t.includes(p)) puntosPago++;
-        }
-
-        const esPagoEvidente = [
-            'constancia de pago', 'numero de operacion', 'codigo de operacion',
-            'operacion exitosa', 'transferencia exitosa', 'pago exitoso',
-            'pago realizado', 'pago recibido', 'monto transferido', 'pago con tarjeta',
-            'comprobante electronico'
-        ].some(p => t.includes(p));
-
-        // Si el caption claramente indica que es un voucher/captura bancaria -> IGNORAR
-        if (esPagoEvidente || puntosPago >= 2) {
-            return false;
-        }
-
-        // C) Indicadores de comanda / ficha de delivery legítima
-        const patronesComanda = [
-            'cliente', 'direccion', 'referencia', 'pedido', 'llevar', 'delivery',
-            'productos', 'orden', 'cuenta', 'total', 'cambio', 'efectivo', 'cobrar',
-            'soles', 's/', 'motorizado', 'envio', 'maps', 'goo.gl', 'http'
-        ];
-
-        let puntosComanda = 0;
-        for (const p of patronesComanda) {
-            if (t.includes(p)) puntosComanda++;
-        }
-
-        const tieneTelefono = /\b9\d{8}\b/.test(t);
-
-        // Si tiene caption con datos claros de comanda o teléfono de cliente -> PERMITIR
-        if (puntosComanda >= 1 || tieneTelefono) {
-            return true;
-        }
-
-        // D) Si no hay suficiente información en la imagen para asegurar que es un pedido -> IGNORAR
-        return false;
-    }
-
-    // 4. SI ES TEXTO PLANO
     if (!t) return false;
 
-    // Descartar charla o preguntas
-    const frasesIgnoradas = [
-        'cuanto sale', 'cuanto es', 'quien va', 'quien libre', 'a que hora', 
-        'ya salio', 'gracias', 'ok', 'x2', 'buenas', 'hola'
-    ];
-    for (const f of frasesIgnoradas) {
-        if (t.startsWith(f) || t === f) return false;
-    }
+    if (pareceMapa(t)) return true;
 
-    // Filtros de ficha técnica o pedido completo por texto
-    const patronesClave = [
-        'cliente', 'cuenta', 'total', 'metodo', 'comprobante', 'delivery', 
-        'cobrar', 'cambio', 'efectivo', 'soles', 's/', 'motorizado',
-        'necesito', 'envio', 'pedido', 'llevar', 'maps', 'goo.gl', 'http', 'yape', 'direccion', 'referencia'
-    ];
-    
-    let coincidencias = 0;
-    for (const p of patronesClave) {
-        if (t.includes(p)) coincidencias++;
-    }
+    if (msgReal?.imageMessage ||
+    msgReal?.documentMessage) {
 
-    if (coincidencias >= 1 || /\b9\d{8}\b/.test(t)) {
-        return true;
-    }
+    if (esVoucherPago(t)) return false;
+    if (esComandaLegible(t)) return true;
 
     return false;
 }
 
-function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
-    if (!esEsenciaDePedido(texto, msgReal)) {
-        return null;
+    return esComandaLegible(t);
+}
+
+function esVoucherPago(texto) {
+    const t = limpiarTexto(texto);
+    if (!t) return false;
+
+    const frasesVoucher = [
+        'constancia de pago',
+        'comprobante de pago',
+        'operacion exitosa',
+        'transferencia exitosa',
+        'pago exitoso',
+        'pago realizado',
+        'pago recibido',
+        'monto transferido',
+        'yapeaste',
+        'enviaste dinero',
+        'dinero enviado',
+        'transaccion exitosa',
+        'compra aprobada',
+        'operacion aprobada',
+        'transaccion aprobada',
+        'pago con tarjeta',
+        'compra realizada',
+        'pago confirmado',
+        'transferencia realizada'
+    ];
+
+    if (frasesVoucher.some(frase => t.includes(frase))) {
+        return true;
     }
 
-    const textoLimpio = limpiarTexto(texto);
-    const contextoMsg = msgReal.extendedTextMessage?.contextInfo;
+    const marcaPago =
+        /\b(yape|plin|bcp|bbva|interbank|izipay|niubiz|visa|mastercard)\b/.test(t);
 
-    // 1. Busca únicamente en el texto del pedido
-    let candidatos = buscarLocalesEnTexto(textoLimpio);
+    const tieneDatosPedido =
+        /\b(cliente|direccion|pedido|delivery|productos?|orden)\b/.test(t);
 
-    // 2. Si no encontró candidatos, busca en el mensaje citado/reenviado
-    if (candidatos.length === 0) {
-        const mensajeCitado = contextoMsg?.quotedMessage;
-        const textoCitado = mensajeCitado ? extraerTextoMensaje(mensajeCitado) : '';    
-        const citadoLimpio = limpiarTexto(textoCitado);
-        
-        candidatos = buscarLocalesEnTexto(citadoLimpio);
+    if (!marcaPago || tieneDatosPedido) {
+        return false;
     }
 
-    // Si no hay candidatos o hay ambigüedad (más de 1), ignora
-    if (candidatos.length !== 1) return null;
+    const senalesTransaccion = [
+        /\boperacion\b/,
+        /\btransaccion\b/,
+        /\bdestinatario\b/,
+        /\bremitente\b/,
+        /\btransferencia\b/,
+        /\benviado\b/,
+        /\bcodigo\b/,
+        /\bimporte\b/,
+        /\bmonto\b/,
+        /\baprobada\b/,
+        /\baprobado\b/,
+        /\btarjeta\b/
+    ].filter(patron => patron.test(t)).length;
 
-    const local = candidatos[0];
+    return senalesTransaccion >= 2;
+}
 
-    // Detecta si viene ubicación en el mensaje o en el citado
-    const esUbicacion = Boolean(
-        msgReal.locationMessage || 
-        msgReal.liveLocationMessage || 
-        contextoMsg?.quotedMessage?.locationMessage ||
-        contextoMsg?.quotedMessage?.liveLocationMessage
+function pareceMapa(texto) {
+    const t = limpiarTexto(texto);
+
+    if (!t) return false;
+
+    if (/maps\.app\.goo\.gl|goo\.gl\/maps|google maps|maps\.google/.test(t)) {
+        return true;
+    }
+
+    const indicadores = [
+        /\bavenida\b/,
+        /\bav\b/,
+        /\bcalle\b/,
+        /\bjiron\b/,
+        /\bjr\b/,
+        /\bcostanera\b/,
+        /\basoc\b/,
+        /\burb\b/,
+        /\bsector\b/,
+        /\bcoordenadas\b/
+    ];
+
+    const cantidad = indicadores.reduce(
+        (suma, patron) => suma + (patron.test(t) ? 1 : 0),
+        0
     );
 
-    // FILTRO OBLIGATORIO DE ZONA (Tu lógica estricta)
+    return cantidad >= 2 && !esComandaLegible(t);
+}
+
+async function extraerTextoOCR(msgOriginal, mensajeReal, sock) {
+    if (!createWorkerOCR || typeof downloadMediaMessage !== 'function') {
+        return '';
+    }
+
+    const esImagen = Boolean(mensajeReal?.imageMessage);
+
+    const esDocumentoImagen = Boolean(
+        mensajeReal?.documentMessage &&
+        /^image\//i.test(mensajeReal.documentMessage.mimetype || '')
+    );
+
+    if (!esImagen && !esDocumentoImagen) {
+        return '';
+    }
+
+    try {
+        if (!workerOCRPromise) {
+            workerOCRPromise = createWorkerOCR(
+                'spa+eng',
+                1,
+                { logger: () => {} }
+            ).catch(error => {
+                workerOCRPromise = null;
+                throw error;
+            });
+        }
+
+        const worker = await workerOCRPromise;
+
+        const buffer = await downloadMediaMessage(
+            msgOriginal,
+            'buffer',
+            {},
+            {
+                logger: pino({ level: 'silent' }),
+                reuploadRequest: sock.updateMediaMessage
+            }
+        );
+
+        if (!buffer || !Buffer.isBuffer(buffer)) {
+            return '';
+        }
+
+        const resultado = await worker.recognize(buffer);
+
+        return (resultado?.data?.text || '').trim();
+
+    } catch (error) {
+        console.error(
+            'Error al leer la comanda con OCR:',
+            error.message || error
+        );
+
+        return '';
+    }
+}
+
+function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
+    if (!esEsenciaDePedido(texto, msgReal)) return null;
+
+    const localesGrupo = buscarLocalesEnTexto(
+        limpiarTexto(nombreGrupo)
+    );
+
+    if (localesGrupo.length !== 1) return null;
+
+    const local = localesGrupo[0];
+
+
     if (modoTodos !== true) {
         if (!zonaFiltro || local.zona !== zonaFiltro) {
             return null;
@@ -383,6 +485,7 @@ function detectarLocalPorZona(texto, zonaFiltro, nombreGrupo, msgReal) {
 
     return local;
 }
+
 // 🚀 NÚCLEO PRINCIPAL
 
 async function iniciarBot() {
@@ -449,14 +552,19 @@ async function iniciarBot() {
             const mensajeReal = desempacarMensaje(msg);
             if (!mensajeReal) continue;
 
-            let nombreGrupoTemp = nombresGruposCache.get(jid) || '';
-    if (!nombreGrupoTemp && (esGrupo || jid.endsWith('@g.us'))) {
-    sock.groupMetadata(jid).then(meta => {
-        if (meta?.subject) {
-            nombreGrupoTemp = meta.subject;
-            nombresGruposCache.set(jid, meta.subject);
+           let nombreGrupoTemp = nombresGruposCache.get(jid) || '';
+
+if (!nombreGrupoTemp && esGrupo) {
+    try {
+        const meta = await sock.groupMetadata(jid);
+        nombreGrupoTemp = meta?.subject || '';
+
+        if (nombreGrupoTemp) {
+            nombresGruposCache.set(jid, nombreGrupoTemp);
         }
-    }).catch(() => {});
+    } catch (error) {
+        console.error('Error obteniendo nombre del grupo:', error.message);
+    }
 }
 
             if (GRUPOS_EXCLUIDOS.some(ex => limpiarTextoConEmojis(nombreGrupoTemp) === limpiarTextoConEmojis(ex))) continue;
@@ -543,7 +651,7 @@ async function iniciarBot() {
             }
 
            // EVALUACIÓN Y RESPUESTA EN GRUPOS
-            let nombreGrupo = nombresGruposCache.get(jid) || '';
+            const nombreGrupo = nombreGrupoTemp || nombresGruposCache.get(jid) || '';
             if (!nombreGrupo && jid.endsWith('@g.us')) {
                 // Pide los datos al servidor en segundo plano sin congelar la respuesta del bot
                 sock.groupMetadata(jid)
@@ -554,8 +662,19 @@ async function iniciarBot() {
             }
 
             // Detecta el local de inmediato (si el nombre aún no cargó, pasa '' sin trabarse)
-            const localDetectado = detectarLocalPorZona(textoBruto, zonaPrioritaria, nombreGrupo, mensajeReal);
+            const textoOCR = await extraerTextoOCR(msg, mensajeReal, sock);
 
+const textoParaDetectar = [
+    textoBruto,
+    textoOCR
+].filter(Boolean).join('\n').trim();
+
+const localDetectado = detectarLocalPorZona(
+    textoParaDetectar,
+    zonaPrioritaria,
+    nombreGrupo,
+    mensajeReal
+);
             if (localDetectado && (modoTodos || localDetectado.zona === zonaPrioritaria)) {
                 const emisor = msg.key.participant || jid;
                 const claveEmisor = `${jid}_${emisor}`;
@@ -622,23 +741,24 @@ if (process.env.RADAR_TEST === '1') {
     const txt = (t) => ({ conversation: t });
     const ficha = (n) => `Pedido ${n}\nCliente: Juan 987654321\nDirección: Av Cultura 123\nTotal s/ 45 efectivo`;
     const casos = [
-        ['5b ubicación sola, con grupo Limbus', 'centro', false, { locationMessage: {} }, 'Limbus Delivery', null],
+        ['1  centro + Sushi Cusco Wayki', 'centro', false, txt(ficha('Sushi Cusco Wayki')), '', null],
+        ['5b ubicación sola, con grupo Limbus', 'centro', false, { locationMessage: {} }, 'Limbus Delivery', 'limbus'],     
         ['11 sansebastian + Wayki (centro)', 'sansebastian', false, txt(ficha('Sushi Cusco Wayki')), '', null],
-        ['12 pedido Giaco + grupo Limbus, centro', 'centro', false, txt(ficha('Delivery Giaco')), 'Limbus Delivery', null],
-        ['12b pedido Giaco + grupo Limbus, aeropuerto', 'aeropuerto', false, txt(ficha('Delivery Giaco')), 'Limbus Delivery', 'delivery giaco'],
-        ['12c pedido Limbus + grupo Giaco, aeropuerto', 'aeropuerto', false, txt(ficha('Limbus')), 'Delivery Giaco', null],
+        ['12 pedido Giaco + grupo Limbus, centro', 'centro', false, txt(ficha('Delivery Giaco')), 'Limbus Delivery', 'limbus'],
+        ['12b pedido Giaco + grupo Limbus, aeropuerto', 'aeropuerto', false, txt(ficha('Delivery Giaco')), 'Limbus Delivery', null],
+        ['12c pedido Limbus + grupo Giaco, aeropuerto', 'aeropuerto', false, txt(ficha('Limbus')), 'Delivery Giaco', 'delivery giaco'],
         ['13 texto Giaco citando ubicación, centro', 'centro', false, { extendedTextMessage: { text: ficha('Delivery Giaco'), contextInfo: { quotedMessage: { locationMessage: {} } } } }, '', null],
-        ['14 todos + Giaco + grupo Limbus', 'centro', true, txt(ficha('Delivery Giaco')), 'Limbus Delivery', 'delivery giaco'],
-        ['1  centro + Sushi Cusco Wayki',   'centro',       false, txt(ficha('Sushi Cusco Wayki')), '',  'sushi cusco wayki'],
+        ['14 todos + Giaco + grupo Limbus', 'centro', true, txt(ficha('Delivery Giaco')), 'Limbus Delivery', 'limbus'],
+        ['1  centro + Sushi Cusco Wayki', 'centro', false, txt(ficha('Sushi Cusco Wayki')), '', null],
         ['2  centro + Delivery Giaco',      'centro',       false, txt(ficha('Delivery Giaco')),    '',  null],
         ['3  sanjeronimo + Mr Sushi Cusco', 'sanjeronimo',  false, txt(ficha('Mr Sushi Cusco')),    '',  null],
-        ['4  sanjeronimo + Pikol Cachimayo','sanjeronimo',  false, txt(ficha('Pollería Pikol Cachimayo')), '', 'pollería pikol cachimayo'],
+        ['4 sanjeronimo + Pikol Cachimayo', 'sanjeronimo', false, { locationMessage: {} }, '🐔Deliv. Pikol Cachimayo🐔', 'pollería pikol cachimayo'],
         ['5  centro + ubicación sola',      'centro',       false, { locationMessage: { degreesLatitude: -13.5, degreesLongitude: -71.9 } }, '', null],
         ['6  centro + local desconocido',   'centro',       false, txt(ficha('Pizzería Los Tres Chanchitos')), '', null],
-        ['7  nombre solo en el grupo',      'centro',       false, txt(ficha('')),                  'Limbus Delivery', null],
+        ['7  nombre solo en el grupo', 'centro', false, txt(ficha('')), 'Limbus Delivery', 'limbus'],       
         ['8  palabras genéricas',           'centro',       false, txt('Pedido delivery pollería sushi ubicación dirección cliente 987654321'), '', null],
         ['9a todos + desconocido',          'centro',       true,  txt(ficha('Local Inventado')),   '',  null],
-        ['9b todos + Giaco',                'centro',       true,  txt(ficha('Delivery Giaco')),    '',  'delivery giaco'],
+        ['9b todos + Giaco', 'centro', true, txt(ficha('Delivery Giaco')), '', null],
     ];
     
     let pruebasFallidas = 0;
