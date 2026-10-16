@@ -47,6 +47,8 @@ let zonaPrioritaria = 'sanjeronimo';
 let modoTodos = false;
 let botActivo = true;
 
+let generacionEstadoBot = 0;
+
 const mensajesProcesados = new Set();
 const ultimasRespuestasGrupo = new Map(); // Para cooldown de grupos (Timestamps)
 const ultimasRespuestasEmisor = new Map(); // Para cooldown de emisores (Objetos)
@@ -118,12 +120,15 @@ const LOCALES = [
     { nombre: 'librería pacha huáscar', alias: ['pacha', 'libreria pacha', 'pacha huascar'], zona: 'wanchaq' },
 
     // 🟪 MARCAVALLE
+    { nombre: 'DELIV. ALA QUE DELI', alias: ['deliv ala que deli', 'ala que deli', 'delivery ala que deli'], zona: 'marcavalle' },
+    { nombre: 'Pollería Felipes', alias: ['deliv polleria felipes', 'polleria felipes', 'felipes'], zona: 'marcavalle' },
+    { nombre: 'Delivery Akatsuka', alias: ['delivery akatsuka', 'akatsuka', 'deliverys akatsuka', '⭐🍱delivery akatsuka🍱⭐'], zona: 'marcavalle' },
+    { nombre: 'DELIVERYS DE OLY', alias: ['deliverys de oly', 'delivery de oly', 'oly', 'deliv erys de oly'], zona: 'marcavalle' },
     { nombre: 'et-sushi marcavalle', alias: ['et sushi', 'et-sushi', 'et sushi marcavalle', 'et-sushi marcavalle'], zona: 'marcavalle' },
     { nombre: 'takibi sushi bar', alias: ['takibi', 'takibi sushi', 'takibi sushi bar', 'deliv takibi sushi bar'], zona: 'marcavalle' },
     { nombre: 'pecas de sol', alias: ['pecas de sol', 'pecas', 'deliverys pecas de sol'], zona: 'marcavalle' },
     { nombre: 'punto mar cevichería', alias: ['punto mar', 'punto mar cevicheria', 'cevicheria punto mar', 'deliv punto mar'], zona: 'marcavalle' },
     { nombre: 'bandejazos', alias: ['bandejazos', 'deliverys bandejazos', 'bandejazo'], zona: 'marcavalle' },
-    { nombre: 'linaje 33', alias: ['linaje 33', 'linaje', 'delivery linaje 33'], zona: 'marcavalle' },
     { nombre: 'jaku sushi', alias: ['jaku', 'jaku sushi', 'magisterio', 'magis'], zona: 'marcavalle' },
     { nombre: 'karitos', alias: ['karitos'], zona: 'marcavalle' },
     { nombre: 'taytas', alias: ['taytas', 'taytas pizzeria', 'deliv taytas pizzeria'], zona: 'marcavalle' },
@@ -136,9 +141,9 @@ const LOCALES = [
     { nombre: 'pizza car', alias: ['pizza car'], zona: 'marcavalle' },
     { nombre: '7 caldos', alias: ['7 caldos', 'siete caldos'], zona: 'marcavalle' },
     { nombre: 'taco kombi', alias: ['taco kombi', 'tacos kombi', 'deliverys taco kombi'], zona: 'marcavalle' },
-    { nombre: 'delivery akatsuka', alias: ['akatsuka', 'delivery akatsuka', 'akatsuka sushi'], zona: 'marcavalle' },
     { nombre: 'pez limon santa úrsula', alias: ['pez limon', 'pez limon santa ursula', 'deliv pez limon'], zona: 'marcavalle' },
     { nombre: 'chifa kung food panda', alias: ['kung food panda', 'food panda', 'kung food', 'deliv kung food panda'], zona: 'marcavalle' },
+    { nombre: 'Deliverys Sazon de Karo', alias: ['deliverys sazon de karo', 'delivery sazon de karo', 'sazon de karo', 'sazón de karo'], zona: 'marcavalle' },
 
     // 🟨 SAN SEBASTIÁN
     { nombre: 'mr sushi cusco', alias: ['mr sushi cusco', 'mr. sushi cusco', 'deliv mr sushi'], zona: 'sansebastian' },
@@ -152,6 +157,7 @@ const LOCALES = [
     { nombre: 'quinta peña don luis', alias: ['quinta peña don luis', 'quinta don luis', 'don luis'], zona: 'sansebastian' },
     { nombre: 'croocantpizzas', alias: ['croocantpizzas', 'croocant'], zona: 'sansebastian' },
     { nombre: 'katsu sushi', alias: ['katsu', 'katsu sushi', 'deliverys katsu sushi'], zona: 'sansebastian' },
+    { nombre: 'DELIVERYS SOL DE MAYO', alias: ['deliverys sol de mayo', 'delivery sol de mayo', 'sol de mayo'], zona: 'sansebastian' },
 
     // 🟩 SAN JERÓNIMO / LARAPA
     { nombre: 'la avenida', alias: ['la avenida', 'avenida larapa'], zona: 'sanjeronimo' },
@@ -174,7 +180,8 @@ const LOCALES = [
     { nombre: 'punto fit molino', alias: ['punto fit molino', 'punto fit el molino'], zona: 'aeropuerto' },
     { nombre: 'tomasa tito', alias: ['tomasa tito', 'tomasa'], zona: 'aeropuerto' },
     { nombre: 'nonna dioni pizzeria', alias: ['nonna dioni', 'dioni'], zona: 'aeropuerto' },
-    { nombre: 'chifa baozi', alias: ['baozi', 'chifa baozi'], zona: 'aeropuerto' }
+    { nombre: 'chifa baozi', alias: ['baozi', 'chifa baozi'], zona: 'aeropuerto' },
+    { nombre: 'Delivery Linaje 33', alias: ['delivery linaje 33', 'linaje 33'], zona: 'aeropuerto' },
 ];
     // ==========================================
 // 🔎 ÍNDICE GLOBAL DE TÉRMINOS (nuevo)
@@ -577,48 +584,57 @@ if (!nombreGrupoTemp && esGrupo) {
 
             if (esMiChatPrivado) {
                 if (textoLimpio === 'wanchaq') {
-                    zonaPrioritaria = 'wanchaq'; modoTodos = false; botActivo = true;
+                    zonaPrioritaria = 'wanchaq'; modoTodos = false; 
+                    generacionEstadoBot++;
                     await sock.sendMessage(jid, { text: 'ire a wanchaq' });
                     continue;
                 }
                 else if (textoLimpio === 'marcavalle' || textoLimpio === 'marca' || textoLimpio === 'magisterio') {
-                    zonaPrioritaria = 'marcavalle'; modoTodos = false; botActivo = true;
+                    zonaPrioritaria = 'marcavalle'; modoTodos = false; 
+                    generacionEstadoBot++;
                     await sock.sendMessage(jid, { text: 'camino a marcavalle' });
                     continue;
                 }
                 
                 else if (textoLimpio === 'sansebastian' || textoLimpio === 'sebas' || textoLimpio === 'cultura') {
-                    zonaPrioritaria = 'sansebastian'; modoTodos = false; botActivo = true;
+                    zonaPrioritaria = 'sansebastian'; modoTodos = false; 
+                    generacionEstadoBot++;
                     await sock.sendMessage(jid, { text: 'En sansebas' });
                     continue;
                 }
                 else if (textoLimpio === 'centro') {
-                    zonaPrioritaria = 'centro'; modoTodos = false; botActivo = true;
+                    zonaPrioritaria = 'centro'; modoTodos = false; 
+                    generacionEstadoBot++;
                     await sock.sendMessage(jid, { text: 'camino al centro' });
                     continue;
                 }
                 else if (textoLimpio === 'sanjeronimo' || textoLimpio === 'larapa' || textoLimpio === 'jero') {
-                    zonaPrioritaria = 'sanjeronimo'; modoTodos = false; botActivo = true;
+                    zonaPrioritaria = 'sanjeronimo'; modoTodos = false; 
+                    generacionEstadoBot++;
                     await sock.sendMessage(jid, { text: ' Estoy bajando' });
                     continue;
                 }
                 else if (textoLimpio === 'aeropuerto' || textoLimpio === 'aero') {
-                    zonaPrioritaria = 'aeropuerto'; modoTodos = false; botActivo = true;
+                    zonaPrioritaria = 'aeropuerto'; modoTodos = false; 
+                    generacionEstadoBot++;
                     await sock.sendMessage(jid, { text: 'camino para el aeropuerto' });
                     continue;
                 }
                 else if (textoLimpio === 'todos') {
-                    modoTodos = true; botActivo = true;
+                    modoTodos = true;
+                    generacionEstadoBot++;
                     await sock.sendMessage(jid, { text: 'estare por todos lados' });
                     continue;
                 }
                 else if (textoLimpio === 'ocupado' || textoLimpio === 'pausa') {
                     botActivo = false;
+                    generacionEstadoBot++;
                     await sock.sendMessage(jid, { text: 'un breck' });
                     continue;
                 }
                 else if (textoLimpio === 'libre' || textoLimpio === 'activo') {
                     botActivo = true;
+                    generacionEstadoBot++;
                     const nombreZonaConfirmacion = modoTodos ? 'estare por todos lados' : ZONAS_CONFIG[zonaPrioritaria]?.nombre;
                     await sock.sendMessage(jid, { text: `free en  ${nombreZonaConfirmacion}` });
                     continue;
@@ -641,6 +657,7 @@ if (!nombreGrupoTemp && esGrupo) {
 
             // 3. EVITAR RESPONDER A TUS PROPIOS MENSAJES O MENSAJES FUERA DE GRUPOS
             if (!botActivo || deMi || !esGrupo) continue;
+            const generacionAlIniciar = generacionEstadoBot;
 
             // 🔒 BLOQUEO INMEDIATO PREVIO
             if (bloqueosGrupo.get(jid)) continue;
@@ -663,6 +680,9 @@ if (!nombreGrupoTemp && esGrupo) {
 
             // Detecta el local de inmediato (si el nombre aún no cargó, pasa '' sin trabarse)
             const textoOCR = await extraerTextoOCR(msg, mensajeReal, sock);
+            if (!botActivo || generacionAlIniciar !== generacionEstadoBot) {
+    continue;
+}
 
 const textoParaDetectar = [
     textoBruto,
@@ -707,6 +727,9 @@ const localDetectado = detectarLocalPorZona(
                 }
 
                 // 🔒 ACTIVACIÓN DE CANDADO SÍNCRONO
+                if (!botActivo || generacionAlIniciar !== generacionEstadoBot) {
+    continue;
+}
                 bloqueosGrupo.set(jid, true);
 
                 // Guardamos el tiempo de grupo y los datos estructurados por emisor
@@ -719,6 +742,9 @@ const localDetectado = detectarLocalPorZona(
 
                 try {
                     await sock.sendMessage(jid, { text: 'Yo' });
+                    if (!botActivo || generacionAlIniciar !== generacionEstadoBot) {
+    continue;
+}
 
                     const miJidDestino = MI_JID;
                     const textoZonaAviso = ZONAS_CONFIG[localDetectado.zona]?.nombre || localDetectado.zona.toUpperCase();
